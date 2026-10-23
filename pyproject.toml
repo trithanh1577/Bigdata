@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "world-recipe-hub"
+version = "0.2.0"
+description = "Classroom proof of concept for multi-source recipe crawling and normalization"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4==4.14.2",
+  "requests==2.32.5",
+]
+
+[project.scripts]
+recipehub = "recipehub.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["recipehub*"]
+
+

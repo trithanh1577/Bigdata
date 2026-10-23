@@ -1,0 +1,27 @@
+[
+  {
+    "id": "themealdb",
+    "name": "TheMealDB",
+    "type": "themealdb",
+    "base_url": "https://www.themealdb.com/api/json/v1",
+    "api_key": "1",
+    "areas": ["Italian", "Japanese", "Thai", "Vietnamese", "South Korean"],
+    "language": "en",
+    "license": "Use subject to TheMealDB API Terms; educational development use; attribute TheMealDB",
+    "terms_url": "https://www.themealdb.com/terms_of_use.php",
+    "attribution": "Recipe data provided by TheMealDB — https://www.themealdb.com/",
+    "enabled": true
+  },
+  {
+    "id": "wikibooks",
+    "name": "Wikibooks Cookbook",
+    "type": "wikibooks",
+    "api_url": "https://en.wikibooks.org/w/api.php",
+    "category": "Category:Recipes",
+    "language": "en",
+    "license": "CC BY-SA 4.0 and GFDL unless a page states otherwise; verify page notices",
+    "terms_url": "https://en.wikibooks.org/wiki/Wikibooks:Copyrights",
+    "attribution": "Wikibooks Cookbook contributors; retain the source page URL and license",
+    "enabled": true
+  }
+]
