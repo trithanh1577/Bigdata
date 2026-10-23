@@ -1,4 +1,4 @@
-# Global Culinary Knowledge Base
+# Bigdata — Global Culinary Knowledge Base
 
 Kho tri thức ẩm thực đa quốc gia: tự động lấy dữ liệu món ăn từ nhiều nguồn Internet, lưu bản gốc vào data lake, chuẩn hoá thành một định dạng chung để các phần knowledge base và website có thể dùng tiếp.
 
