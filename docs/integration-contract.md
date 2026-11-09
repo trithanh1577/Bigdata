@@ -86,3 +86,7 @@ The currently configured providers do not offer complete structured allergen or 
 - Similar title/region records are listed in `data/processed/quality_report.json` as candidate duplicates. Do not delete/merge them without review.
 - Person 3 can load these JSON records into relational tables and add SQL/full-text search. Vector search is optional and should index normalized text with the same source metadata.
 - Person 4 can render records and citations using `title`, `country_or_region`, `ingredients`, `instructions`, `image_url`, `source_url`, and `attribution`; hide or label fields that are missing.
+
+## Website implementation (Person 4)
+
+The English website is implemented in `frontend/`. Its default mock adapter uses explicitly synthetic records matching the schema above; these are not collected recipes. A configurable HTTP adapter is ready for Person 3's backend. The proposed endpoint contract is documented in [frontend-api-contract.md](frontend-api-contract.md), and the component handoff is in [person-4-delivery.md](person-4-delivery.md). Backend/database implementation and live integration remain Person 3's work.

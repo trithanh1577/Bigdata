@@ -1,156 +1,186 @@
 # Bigdata — Global Culinary Knowledge Base
 
-Kho tri thức ẩm thực đa quốc gia: tự động lấy dữ liệu món ăn từ nhiều nguồn Internet, lưu bản gốc vào data lake, chuẩn hoá thành một định dạng chung để các phần knowledge base và website có thể dùng tiếp.
+A multi-region culinary knowledge project: collect recipes from Internet sources, retain raw API snapshots, normalize records into a shared schema, and expose them through a searchable website and source-grounded conversation interface.
 
-> **Phạm vi code hiện tại:** chỉ triển khai nhiệm vụ Người 1 và Người 2 (crawler, data lake, chuẩn hoá dữ liệu). Knowledge base/backend hỏi đáp và website là phần việc của Người 3 và Người 4, chưa được triển khai trong repo.
+**Implemented:** Persons 1–2's crawler, local data lake, and normalization pipeline; Person 4's English website with synthetic demo responses and a configurable HTTP adapter. **Pending:** Person 3's database, search/answer API, and live website integration. The demo is not the collected dataset.
 
-## Tổng quan và luồng dữ liệu
+## Run the website — Person 4
+
+From the repository root, using Python 3.11 or later:
+
+```powershell
+python -m http.server 5173 --bind 127.0.0.1 --directory frontend
+```
+
+Open **http://127.0.0.1:5173**. Keep the terminal open; press `Ctrl+C` to stop. No npm installation, frontend build, API key, crawler run, or backend is needed for demo mode. Serve the files over HTTP rather than opening `index.html` directly.
+
+The website, **Recipe Atlas**, includes:
+
+- Search by recipe name, ingredient, region, description, or category.
+- Country/region, category, total-time, and difficulty filters; title/time sorting; pagination and reset controls.
+- Comma-separated ingredient avoidance and an option to require source-declared allergen information.
+- Recipe details with original ingredient wording, instructions, source attribution, license/terms links, and collection/update times when available.
+- A conversation panel with clickable record citations, follow-up context, and a new-conversation control.
+- Responsive layouts, labeled controls, keyboard focus indicators, native detail dialogs, empty/error/loading states, and retry controls.
+
+The default collection contains **eight synthetic teaching records across five regions**. All demo content is labeled; illustrations are decorative. The demo companion performs local deterministic retrieval rather than calling an AI model. Missing fields remain unknown, and ingredient matching does not guarantee dietary safety.
+
+To connect Person 3's backend, review [the proposed API contract](docs/frontend-api-contract.md), then change `mode` to `"api"` and set `apiBaseUrl` in [`frontend/config.js`](frontend/config.js). No backend is currently provided. API mode shows errors when the service is unavailable and never silently substitutes demo records.
+
+See [Person 4's delivery report and demonstration guide](docs/person-4-delivery.md) for the English component description, assignment coverage, demo script, and handoff limits.
+
+## Architecture and data flow
 
 ```text
 TheMealDB API ─┐
-               ├─> Crawler/Scheduler ─> data/raw/ ─> Chuẩn hoá/kiểm tra ─> data/processed/
-Wikibooks API ─┘                                                        │
-                                      schema chung + provenance ────────┘
+              ├─> Crawler / scheduler ─> data/raw/ ─> Normalize / validate
+Wikibooks API ┘                                                │
+                                                              v
+                                                    data/processed/
+                                                              │
+                                             Person 3 database / API (pending)
+                                                              │
+                                                              v
+                                                 Person 4 website (implemented)
+                                                 ↑
+                                      Synthetic mock adapter (default)
 ```
 
-- **Data lake (`data/raw/`)** giữ snapshot JSON nguyên gốc từ API, tên nguồn, URL, giấy phép/điều khoản, thời điểm thu thập và metadata từng lần chạy.
-- **Processed data (`data/processed/`)** chứa recipe JSON cùng schema, giữ định lượng gốc, thông tin nguồn và báo cáo chất lượng.
-- Mỗi công thức từ một nguồn được giữ thành một record riêng. Các món cùng tên chỉ được đánh dấu là ứng viên trùng để người vận hành xem xét, không tự gộp các phiên bản hợp lệ.
-- Chỉ lưu thông tin dị ứng/dinh dưỡng/mẹo/thay thế nếu nguồn có cung cấp; không suy đoán. Ảnh được lưu dưới dạng URL nguồn, không tải/copy file ảnh.
-- Mục tiêu demo theo tài liệu đề xuất: khoảng 5 quốc gia, 100–150 món, 2–3 nguồn và 5–8 nhóm món. Đây là mục tiêu mở rộng dữ liệu, không phải số liệu đã có sẵn trong repo.
+- **Raw data lake:** retains original JSON, source IDs/URLs, attribution, license/terms notes, collection time, and run metadata.
+- **Processed data:** uses one recipe schema across sources and retains original measurements, source provenance, validation errors, and duplicate candidates.
+- **Recipe versions:** each provider record remains separate. Similar title/region records are flagged for review rather than merged automatically.
+- **Incomplete information:** allergens, nutrition, tips, substitutions, time, and difficulty are only populated when supplied by a source. Images remain provider URLs; the crawler does not download image files.
+- **Collection target:** about five countries, 100–150 dishes, two or three sources, and five to eight dish categories. These are project targets, not claims about existing collected data.
 
-## Nguồn dữ liệu hiện cấu hình
+The shared processed schema is documented in [integration-contract.md](docs/integration-contract.md). Architectural choices and limits are in [architecture-decisions.md](docs/architecture-decisions.md).
 
-1. **TheMealDB API** — endpoint chính thức, đang dùng test key `1` cho mục đích phát triển/giáo dục; giữ attribution và tuân thủ [điều khoản TheMealDB](https://www.themealdb.com/terms_of_use.php). Không crawl trực tiếp website thay cho API.
-2. **Wikibooks Cookbook API** — lấy trang trong danh mục công thức; giữ URL/attribution. Phần lớn văn bản Wikibooks theo CC BY-SA 4.0 và GFDL, nhưng cần xem thông báo license riêng của từng trang/media; đọc [chính sách bản quyền Wikibooks](https://en.wikibooks.org/wiki/Wikibooks:Copyrights).
+## Data sources
 
-Danh sách nguồn, vùng ẩm thực và metadata được đặt trong [`config/recipe_sources.json`](config/recipe_sources.json). Nguồn mới chỉ được thêm sau khi kiểm tra API/robots, điều khoản sử dụng, attribution và quyền lưu trữ. Với TheMealDB, tài liệu nói free API dành cho phát triển và học tập; không xem đó là giấy phép cho phát hành ứng dụng công khai.
+1. **TheMealDB API:** official endpoints using test key `1` for development/education. Preserve attribution and follow [TheMealDB's terms](https://www.themealdb.com/terms_of_use.php). Use the API rather than scraping its website. The free development API is not assumed to authorize a public application release.
+2. **Wikibooks Cookbook API:** recipe-category pages via MediaWiki. Preserve attribution and page URLs. Most text is distributed under CC BY-SA 4.0/GFDL, but individual page/media notices may differ; review [Wikibooks copyright policy](https://en.wikibooks.org/wiki/Wikibooks:Copyrights).
 
-## Công nghệ
+Source settings, configured culinary regions, and provenance metadata live in [`config/recipe_sources.json`](config/recipe_sources.json). Review API/robots access, terms, attribution, and storage rights before adding a provider.
 
-- Python 3.11+
-- `requests` để gọi API; `BeautifulSoup` để trích xuất phần công thức từ HTML do Wikibooks API trả về
-- JSON cho raw snapshots và normalized records; JSONL không bắt buộc trong PoC này
-- File system làm data lake cục bộ; GitHub Actions kiểm tra cú pháp
-- Database quan hệ/full-text, vector search, backend API, LLM và website là các lựa chọn/đầu việc cho Người 3–4, chưa thuộc phần code hiện tại. Vector database là một công cụ truy xuất, không đồng nghĩa với knowledge base.
-
-## Cấu trúc repo
+## Repository structure
 
 ```text
-.
-├── config/
-│   └── recipe_sources.json       # Danh sách API/nguồn và quy tắc nguồn
-├── data/
-│   ├── raw/                      # Snapshot theo nguồn/lần crawl/record
-│   ├── processed/
-│   │   ├── recipes/              # Recipe JSON đã chuẩn hoá, chia theo nguồn
-│   │   └── quality_report.json   # Bản ghi lỗi và ứng viên trùng
-│   └── state/
-│       ├── crawl_cursors.json    # Tiến độ phân trang/crawl giữa các lần chạy
-│       └── crawl_manifest.jsonl  # Nhật ký URL đã thu thập + liên kết tới raw snapshot
-├── docs/
-│   ├── architecture-decisions.md # Quyết định và giới hạn kiến trúc
-│   └── integration-contract.md   # Contract raw → processed cho phần kế tiếp
-├── recipehub/
-│   ├── recipe_crawler.py         # Người 1: API adapters, scheduler input, raw lake
-│   ├── normalize.py              # Người 2: parse, chuẩn hoá, kiểm tra chất lượng
-│   ├── models.py                 # Schema RecipeRecord/Ingredient dùng chung
-│   ├── text.py                   # Làm sạch chuỗi, chuẩn hoá tên, ID/hash
-│   ├── config.py                 # Paths, source config và crawler settings
-│   └── cli.py                    # Các lệnh crawl/normalize/schedule/stats
-├── tests/                        # Kiểm tra parser và logic crawl bằng dữ liệu giả lập
-├── .github/workflows/ci.yml      # Kiểm tra cú pháp trên GitHub Actions
-├── .env.example                  # Mẫu User-Agent/delay/timeout; tự tạo .env cục bộ
-├── requirements.txt              # Dependencies runtime
-└── README.md                     # Tổng quan, hướng dẫn chạy, phân công
+config/recipe_sources.json       API sources and source rules
+data/raw/                       Original snapshots by source/run/record
+data/processed/recipes/          Normalized records by source
+data/processed/quality_report.json
+data/state/crawl_cursors.json    Persistent provider progress
+data/state/crawl_manifest.jsonl  Snapshot history and provenance
+recipehub/
+  recipe_crawler.py             Person 1: API adapters and raw lake
+  normalize.py                  Person 2: parsing and quality checks
+  models.py                     Shared RecipeRecord / Ingredient schema
+  text.py                       String cleanup, normalization, IDs/hashes
+  config.py                     Paths, source configuration, crawler settings
+  cli.py                        crawl / normalize / schedule / stats
+frontend/
+  index.html                    Person 4: discovery, detail, and chat interface
+  styles.css                    Responsive styling and CSS illustrations
+  app.js                        Rendering, interactions, and UI state
+  api.js                        Interchangeable mock / HTTP clients
+  domain.js                     Filtering, pagination, and demo retrieval
+  mock-data.js                  Explicitly synthetic recipe fixtures
+  config.js                     Browser-visible mode and API URL configuration
+  tests/                        Frontend domain and API adapter tests
+docs/                           Schema, architecture, API proposal, delivery report
+tests/                          Python parser, crawler, and pipeline tests
+.github/workflows/ci.yml         Python and frontend checks
+.env.example                    Crawler User-Agent / delay / timeout example
 ```
 
-### Recipe schema chung
+## Team responsibilities
 
-Mỗi record giữ tên gốc và tên chuẩn hoá, vùng/quốc gia, URL ảnh nếu nguồn có, mô tả, nguyên liệu (tên gốc, lượng gốc, đơn vị và tên chuẩn), khẩu phần, thời gian, độ khó, dụng cụ, bước nấu, mẹo, thay thế, allergens/nutrition nếu có nguồn, cùng provenance (nguồn, URL, license/terms, collected/updated time). Trường không có trong nguồn để trống; không tự sinh.
+### Person 1 — Nguyễn Thành Trí (`2474802010400`)
 
-Contract chi tiết nằm trong [`docs/integration-contract.md`](docs/integration-contract.md).
+- Review permitted sources; implement API adapters and configuration-driven crawling.
+- Save original snapshots under `data/raw/<source>/runs/<run_id>/records/`.
+- Preserve source URLs, IDs, attribution, license/terms, and collection time; handle timeouts, HTTP 429, and rate limits.
+- Schedule daily or weekly collection; recipes do not need a 30-minute crawl interval.
 
-## Phân công 4 thành viên
+### Person 2 — Phạm Thị Khánh Ngân (`2474802016786`)
 
-### Người 1 — Nguyễn Thành Trí (`2474802010400`)
+- Co-design the Recipe/Ingredient schema with Person 1.
+- Parse snapshots, normalize names/units only when unambiguous, and preserve original quantities.
+- Validate required fields; create processed records and quality/duplicate reports.
+- Preserve each source/version rather than merging dishes merely because their names match.
 
-- Chọn/kiểm tra các nguồn được phép; triển khai API adapters và crawl theo cấu hình.
-- Lấy record và snapshot JSON nguyên gốc vào `data/raw/<source>/runs/<run_id>/records/`.
-- Giữ URL, attribution, điều khoản/license, ID nguồn và thời điểm thu thập; xử lý timeout/429 và giới hạn tốc độ.
-- Thiết lập crawl định kỳ hằng ngày hoặc hằng tuần; không cần crawl recipe mỗi 30 phút.
+**Persons 1–2 coordination:** agree on the schema and a raw-to-processed example first. Person 1 owns `recipe_crawler.py` and source configuration; Person 2 owns normalization/schema. Review the contract together and coordinate edits to shared files.
 
-### Người 2 — Phạm Thị Khánh Ngân (`2474802016786`)
+### Person 3 — Nguyễn Dũng (`2474802015692`) — pending
 
-- Đồng thiết kế schema Recipe/Ingredient với Người 1 để các nguồn khác nhau cùng đưa vào pipeline.
-- Đọc raw snapshot, chuẩn hoá tên/nguyên liệu/đơn vị khi xác định được, trích xuất định lượng và các trường recipe.
-- Kiểm tra trường bắt buộc/chất lượng dữ liệu, tạo `data/processed/` và báo cáo lỗi/ứng viên trùng.
-- Bảo toàn từng recipe/version theo nguồn; không gộp mù quáng món cùng tên.
+- Build a database/knowledge base from processed records, with exact queries and full-text search.
+- Implement recipe search, filters, details, and source-cited answers through an HTTP API.
+- Manage conversation context. If using an LLM, synthesize only retrieved facts and do not invent ingredients, allergens, or nutrition.
+- Respect ingredient exclusions and only offer substitutions supported by source data; do not claim medical safety.
+- Consider vector retrieval after the SQL/full-text baseline works.
+- Review [the website API proposal](docs/frontend-api-contract.md) with Person 4 before integration.
 
-**Cách phối hợp Người 1–2:** thống nhất schema và ví dụ raw→processed trước; Người 1 sở hữu `recipe_crawler.py`/`config/`, Người 2 sở hữu `normalize.py`/schema. Cùng review contract nhưng tránh sửa chồng cùng module.
+### Person 4 — Nguyễn Trần Hoàng Nhân (`2474802010272`) — implemented with mocks
 
-### Người 3 — Nguyễn Dũng (`2474802015692`) — phần cần làm
+- Build the English recipe discovery website and conversation interface.
+- Display recipes and attribution; offer region/category/time/difficulty filters when values exist.
+- Accept ingredient-avoidance preferences and clearly communicate source/data limitations.
+- Develop against mock responses in parallel, then connect the backend through the HTTP adapter.
 
-- Xây database/knowledge base từ `data/processed/`, truy vấn chính xác và full-text search.
-- Làm backend/API cho tìm món, lọc, xem chi tiết và hỏi đáp có trích dẫn nguồn.
-- Quản lý ngữ cảnh hội thoại; nếu dùng LLM, chỉ tổng hợp kết quả đã truy xuất, không tự bịa nguyên liệu, dị ứng hay dinh dưỡng.
-- Hỗ trợ lọc món theo nguyên liệu người dùng khai báo dị ứng/không ăn; chỉ gợi ý nguyên liệu thay thế khi có dữ liệu nguồn, không cam kết món an toàn y tế.
-- Có thể cân nhắc vector search sau khi baseline SQL/full-text chạy.
+Code is in [`frontend/`](frontend/); the English [delivery report](docs/person-4-delivery.md) describes the implementation and remaining backend dependency.
 
-### Người 4 — Nguyễn Trần Hoàng Nhân (`2474802010272`) — phần cần làm
+## Run ingestion and normalization — Persons 1–2
 
-- Xây website tìm kiếm/khám phá và giao diện hội thoại; làm theo API contract của Người 3.
-- Hiển thị công thức, nguồn/attribution, lọc theo quốc gia/loại món/thời gian/độ khó khi dữ liệu có trường đó.
-- Cho phép nhập yêu cầu dị ứng/kiêng ăn và hiển thị rõ nguồn cùng giới hạn dữ liệu.
-- Dùng mock response để phát triển giao diện song song, sau đó tích hợp backend.
-
-## Cách chạy phần Người 1–2 (PowerShell trong VS Code)
-
-Yêu cầu Python 3.11 trở lên.
+Python 3.11 or later is required. In PowerShell:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Trước khi crawl, tạo `.env` cục bộ và sửa `CRAWLER_USER_AGENT` thành tên bot có email liên hệ thật hoặc URL repo/site công khai của dự án theo [chính sách truy cập API Wikimedia](https://www.mediawiki.org/wiki/Wikimedia_APIs/Access_policy). Placeholder trong `.env.example` không được chấp nhận. Ví dụ:
-
-```powershell
 Copy-Item .env.example .env
 ```
 
-Mở `.env` trong VS Code để sửa dòng `CRAWLER_USER_AGENT`. Không đưa `.env` lên GitHub. Nếu chưa muốn dùng Wikibooks, có thể tạm đặt `"enabled": false` cho nguồn đó trong `config/recipe_sources.json`.
+Before crawling, edit `.env` and replace `CRAWLER_USER_AGENT` with a bot name that includes a real contact email or public project URL, following [Wikimedia's API access policy](https://www.mediawiki.org/wiki/Wikimedia_APIs/Access_policy). Placeholder contact details are rejected. To skip Wikibooks temporarily, set its source configuration to `"enabled": false`. Never commit `.env` or secrets.
 
-Crawl tối đa 10 recipe mỗi nguồn trong một lần chạy (thay đổi được):
-
-```powershell
-python -m recipehub.cli crawl --max-items 10
-```
-
-Chuẩn hoá snapshot mới nhất của mỗi recipe, sau đó xem số lượng và độ phủ quốc gia:
+Crawl at most ten recipes per enabled source, then normalize and inspect coverage:
 
 ```powershell
-python -m recipehub.cli normalize
-python -m recipehub.cli stats
+.\.venv\Scripts\python.exe -m recipehub.cli crawl --max-items 10
+.\.venv\Scripts\python.exe -m recipehub.cli normalize
+.\.venv\Scripts\python.exe -m recipehub.cli stats
 ```
 
-Chạy crawl + chuẩn hoá tự động mỗi ngày; dùng `--days 7` để chạy hằng tuần. Terminal phải để mở; `Ctrl+C` để dừng:
+Run crawl followed by normalization daily; use `--days 7` for weekly collection. Keep the terminal open and stop with `Ctrl+C`:
 
 ```powershell
-python -m recipehub.cli schedule --days 1 --max-items 10
+.\.venv\Scripts\python.exe -m recipehub.cli schedule --days 1 --max-items 10
 ```
 
-Scheduler chạy tuần tự hai bước crawl rồi normalize. TheMealDB lưu ID cuối theo từng vùng; Wikibooks lưu token phân trang để các lần chạy tiếp tục ở vị trí kế tiếp. Tiến độ nằm trong `data/state/crawl_cursors.json`. Mỗi raw record được ghi thêm thành một dòng trong `data/state/crawl_manifest.jsonl` gồm URL, nguồn, thời điểm thu thập và đường dẫn snapshot; chạy lại cùng trang sẽ tạo thêm dòng lịch sử. Lệnh `crawl` báo mã lỗi nếu có nguồn thất bại; lệnh `normalize` báo mã lỗi nếu có record không hợp lệ. Cả hai in JSON để xem chi tiết nguồn/nguyên nhân.
+TheMealDB persists its last meal ID per region, while Wikibooks persists category continuation tokens. Progress is stored in `data/state/crawl_cursors.json`. Each raw snapshot appends a manifest entry with run/source IDs, source URL, collection time, and relative snapshot path. Repeated crawls preserve history. Normalization selects the latest snapshot for each provider record. Crawl and normalize commands return nonzero status for source failures or invalid records and print JSON diagnostics.
 
-Chạy kiểm tra cục bộ (chỉ dùng dữ liệu giả lập, không gọi Internet):
+Generated data is ignored by Git so raw recipe content, processed records, runtime state, and local databases are not published accidentally.
+
+## Validation
+
+Python pipeline tests use simulated source data without Internet access:
 
 ```powershell
-python -m compileall -q recipehub
-python -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m compileall -q recipehub
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Dữ liệu sinh ra nằm trong `data/`, được Git bỏ qua để không đẩy raw snapshots, recipe content hoặc DB cục bộ lên GitHub. Không commit `.env` hoặc API secrets.
+Frontend checks require Node.js 24 and no installed npm packages:
 
-## Giới hạn PoC
+```powershell
+cd frontend
+npm run check
+npm test
+```
 
-Phần Người 1–2 hiện cung cấp ingestion và normalized data lake; chưa có UI, API backend, relational/vector knowledge base hay câu trả lời LLM. Chất lượng parse phụ thuộc cấu trúc mỗi nguồn; các trường không lấy được sẽ rỗng và được báo cáo, không được suy đoán. Recipe cùng món có thể là các phiên bản khác nhau. Nguồn hiện cấu hình không cung cấp dữ liệu dị ứng hoặc nguyên liệu thay thế có cấu trúc một cách đầy đủ, nên các trường này thường để trống. Phần lọc theo dị ứng/thay thế là nhiệm vụ tích hợp của Người 3–4 và không được trình bày như cam kết an toàn y tế.
+GitHub Actions runs both suites. See the delivery guide for the manual browser demonstration and backend integration checklist.
+
+## Proof-of-concept limits
+
+The crawler/normalizer produces a local data lake, not a distributed storage system. Parser quality depends on source structure. A vector database is an optional retrieval tool and is not itself the entire knowledge base.
+
+The website currently demonstrates its flows against synthetic fixtures. The database, live backend, and LLM answer service are pending. Demo chat supports limited English lookup and follow-up patterns. API integration requires Person 3's compatible implementation and CORS setup.
+
+Current providers do not offer complete structured allergen or substitution data. Empty declarations mean unknown. Ingredient exclusions use text matching and cannot check all aliases, hidden ingredients, or cross-contact. Neither filtering nor conversation should be presented as a medical safety guarantee. Missing source fields remain empty/null and are explicitly labeled in the interface.

@@ -34,8 +34,16 @@
 
 **Reason:** Recipe sites and APIs do not generally need a 30-minute crawl cadence; the lecturer's example was not a specific recipe requirement. Each API request is delayed; transient network errors, HTTP 429, and HTTP 5xx responses are retried with bounded waits. TheMealDB area cursors and the Wikibooks category continuation token are persisted in `data/state/crawl_cursors.json` so scheduled runs can advance through source results.
 
-## ADR-006: Current implementation stops at the normalized data contract
+## ADR-006: Separate ingestion, backend, and website ownership
 
-**Decision:** Implement Person 1's source ingestion/raw lake and Person 2's normalization/quality report only. Relational knowledge base, full-text/vector retrieval, LLM/API backend, and user-facing website are handed off to Persons 3 and 4.
+**Decision:** Keep Person 1's source ingestion/raw lake and Person 2's normalization/quality report separate from Persons 3–4's components. Person 4's website is now implemented in `frontend/` with a mock adapter and configurable HTTP adapter. Relational knowledge base, full-text/vector retrieval, and the answer API remain Person 3's implementation work.
 
 **Reason:** Separating component ownership allows the crawler/normalizer pair and the backend/frontend pair to develop concurrently against the schema and integration contract.
+
+## ADR-007: Build a dependency-free static website with interchangeable data adapters
+
+**Decision:** Use HTML, CSS, and JavaScript modules for the English website. Provide explicit mock/API modes, a synthetic fixture collection, and a proposed frontend API contract. Show missing source fields rather than inferring them, and preserve separate provider records in recipe details and citations.
+
+**Reason:** Person 4 can deliver and demonstrate the interface before Person 3's backend exists. A static website works with the repository's existing Python tooling and requires no frontend build service. Separating the HTTP adapter keeps future integration changes out of the rendering layer.
+
+**Trade-off:** The local companion is deterministic demo retrieval, not an LLM. Dietary exclusions are text matches with incomplete source data. Live retrieval, session management, answer grounding, and production authentication belong to the backend. No live integration is claimed until that service is available.
