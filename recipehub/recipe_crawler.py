@@ -229,10 +229,17 @@ class RecipeCrawler:
             (run_dir / "run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         return saved
 
-    def crawl(self, max_items_per_source: int = 20) -> dict[str, Any]:
+    def crawl(self, max_items_per_source: int = 20, source_ids: list[str] | None = None) -> dict[str, Any]:
         if max_items_per_source < 1:
             raise ValueError("max_items_per_source must be at least 1")
         state = self._load_state()
+        configured_sources = self.settings.load_sources()
+        requested_sources = set(source_ids or [])
+        configured_ids = {str(source.get("id", "")) for source in configured_sources}
+        unknown_sources = requested_sources - configured_ids
+        if unknown_sources:
+            raise ValueError("Unknown source ID(s): " + ", ".join(sorted(unknown_sources)))
+        sources = [source for source in configured_sources if not requested_sources or str(source.get("id", "")) in requested_sources]
         run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         report: dict[str, Any] = {
             "run_id": run_id,
@@ -242,7 +249,7 @@ class RecipeCrawler:
             "failed": 0,
             "errors": [],
         }
-        for source in self.settings.load_sources():
+        for source in sources:
             report["sources"] += 1
             source_id = str(source["id"])
             run_dir = self.settings.raw_dir / source_id / "runs" / run_id

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "world-recipe-hub"
-version = "0.2.0"
-description = "Local proof of concept for a multi-source culinary knowledge base and source-cited recipe website"
+version = "0.3.0"
+description = "Multi-source recipe ingestion, SQLite knowledge base, source-cited API, and discovery website"
 requires-python = ">=3.11"
 dependencies = [
   "beautifulsoup4==4.14.2",

@@ -51,16 +51,16 @@ Suggested demonstration:
 
 From `frontend/`, run `npm run check` and `npm test` with Node.js 24. The frontend tests exercise combined search/filter behavior, unknown times, original ingredient wording, allergen declaration handling, pagination, safe source URLs, cited follow-ups, unsupported requests, API query encoding, bounded history, invalid payloads, service failures, and timeouts. GitHub Actions runs these alongside the existing Python pipeline tests without installing frontend packages.
 
-Manual browser review should cover desktop and narrow layouts, keyboard navigation, opening/closing detail dialogs, all form controls, citation navigation, chat reset, backend failures, and retries. The local service is provided by `recipehub/api.py`; a public deployment is outside this proof of concept.
+Manual browser review should cover desktop and narrow layouts, keyboard navigation, opening/closing detail dialogs, all form controls, citation navigation, chat reset, backend failures, and retries. The local service is provided by `recipehub/server.py`; a public deployment is outside this proof of concept.
 
-The earlier UI/pipeline delivery recorded 18 passing frontend tests and 9 passing Python pipeline tests. Headless Chrome checks were documented at desktop (1440 × 1100) and mobile (390 × 844) sizes for collection loading, search, combined filters, empty results, pagination, missing-field details, cited follow-ups, citation navigation, and conversation reset. Those checks predate Person 3's SQLite/API implementation and do not establish current end-to-end integration or constitute a full accessibility audit.
+The earlier UI/pipeline delivery recorded frontend and Python checks before the SQLite/Gemini integration. Those historical checks do not establish current live Gemini behavior or constitute a full accessibility audit.
 
 ## Limits and handoff
 
-The synthetic mock mode is a UI development tool, not the project's collected dataset. The default API mode uses the SQLite knowledge base and local HTTP service. Without an optional model, chat uses deterministic retrieval and a limited set of question intents; it does not understand every arbitrary question. An optional OpenAI-compatible model can be configured server-side.
+The synthetic mock mode is a UI development tool, not the project's collected dataset. The default API mode uses the SQLite knowledge base and local HTTP service. Without Gemini, chat uses deterministic retrieval and a limited set of question intents; natural-language answers, web discovery, and recipe translation depend on a valid Gemini configuration.
 
 Ingredient avoidance uses text matching against supplied names, original wording, and declared allergens. It does not resolve all aliases, certify dietary categories, detect hidden ingredients, or account for cross-contact. An empty allergen list means unknown. Nutrition and substitutions are displayed only when explicitly supplied by the source. No medical safety guarantees are made.
 
-Applied preferences and conversation context are kept in browser memory. Reloading the page clears them; they are not stored in localStorage. In API mode the server keeps cited-record context in memory for the life of the local service. Starting a new conversation creates a new session; server context is cleared when the service restarts.
+Applied filters are kept in browser memory and are reset when the page reloads. In API mode, the server stores cited-record IDs and ingredient exclusions in SQLite for up to one hour; full message transcripts are not stored. Starting a new conversation creates a separate session.
 
-The backend handoff is documented in [frontend-api-contract.md](frontend-api-contract.md). The site and API can be demonstrated together with `python -m recipehub.cli serve` after records are collected and indexed.
+The backend handoff is documented in [frontend-api-contract.md](frontend-api-contract.md). The site and API are served together by `recipehub/server.py`; run `python -m recipehub.cli serve` after records are collected and indexed.

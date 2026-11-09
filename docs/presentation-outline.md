@@ -68,7 +68,7 @@ Run `python -m recipehub.cli stats` and show the actual raw count, processed cou
 ## Slide 9 — Decisions, limitations, and next steps
 
 - Summarize the key choices from [architecture-decisions.md](architecture-decisions.md).
-- State current limits: source coverage, source-provided allergen/substitution completeness, local scheduler, in-memory conversation sessions, and no public hosting. Retrieval-only mode is limited; the optional model depends on an external provider and its terms/availability.
+- State current limits: source coverage, source-provided allergen/substitution completeness, local scheduler, expiring SQLite conversation context, and no public hosting. Retrieval-only mode is limited; the optional model depends on an external provider, network access, quota, and its terms/availability.
 - Possible next work: broader permitted sources, change detection, richer evaluation, persistent sessions, and improved retrieval/model grounding.
 
 **Speaker:** One member summarizes; all members answer questions about their component.

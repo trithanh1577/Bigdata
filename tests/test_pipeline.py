@@ -9,9 +9,41 @@ from unittest.mock import patch
 from recipehub.config import Settings
 from recipehub.normalize import NormalizationPipeline
 from recipehub.recipe_crawler import RecipeCrawler
+from recipehub.knowledge_base import KnowledgeBase
+from recipehub.conversation import ConversationService
 
 
 class PipelineTests(unittest.TestCase):
+    def test_latest_snapshot_compares_instants_across_timezones_and_manifest_hides_invalid_derivatives(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings = Settings(project_root=root, raw_dir=root / "raw", processed_dir=root / "processed", state_dir=root / "state")
+            def write(run, timestamp, title, instructions="Cook the recipe."):
+                path = settings.raw_dir / "themealdb" / "runs" / run / "records" / "record.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({
+                    "source_id": "themealdb", "source_name": "Test provider", "source_record_id": "1",
+                    "source_url": "https://provider.test/recipe", "source_license": "Test terms",
+                    "attribution": "Test provider", "collected_at": timestamp,
+                    "payload": {"strMeal": title, "strIngredient1": "tomato", "strMeasure1": "1", "strInstructions": instructions},
+                }), encoding="utf-8")
+            write("run-1", "2026-11-09T09:00:00+07:00", "Older local-time snapshot")
+            write("run-2", "2026-11-09T03:00:00+00:00", "Newer UTC snapshot")
+            report = NormalizationPipeline(settings).run()
+            self.assertEqual(report["processed"], 1)
+            path = settings.processed_dir / report["processed_files"][0]
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["title"], "Newer UTC snapshot")
+            store = KnowledgeBase(root / "kb.sqlite3")
+            store.import_processed(settings.processed_dir)
+            self.assertEqual(store.stats()["recipes"], 1)
+            write("run-3", "2026-11-09T04:00:00+00:00", "Invalid newer snapshot", instructions="")
+            report = NormalizationPipeline(settings).run()
+            self.assertEqual(len(report["invalid"]), 1)
+            self.assertEqual(report["processed_files"], [])
+            self.assertTrue(path.exists(), "Previous processed files may remain as derivatives on disk.")
+            self.assertEqual(store.import_processed(settings.processed_dir)["removed"], 1)
+            self.assertEqual(store.stats()["recipes"], 0)
+
     def test_crawl_to_raw_lake_to_normalized_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -87,6 +119,12 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(crawl_report["raw_saved"], 2)
             self.assertEqual(normalize_report["processed"], 2)
             self.assertEqual(normalize_report["invalid"], [])
+            store = KnowledgeBase(root / "knowledge_base.sqlite3")
+            self.assertEqual(store.import_processed(settings.processed_dir)["inserted"], 2)
+            answer = ConversationService(store).answer("Find recipes with tomato")
+            self.assertEqual(len(answer["citations"]), 1)
+            self.assertEqual(answer["citations"][0]["source_name"], "TheMealDB")
+            self.assertEqual(answer["citations"][0]["source_url"], "https://www.themealdb.com/meal/100")
             self.assertEqual(len(list(settings.raw_dir.glob("*/runs/*/records/*.json"))), 2)
             self.assertEqual(len(list((settings.processed_dir / "recipes").glob("*/*.json"))), 2)
 

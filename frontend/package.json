@@ -7,6 +7,7 @@
   "scripts": {
     "start": "python -m http.server 5173 --bind 127.0.0.1 --directory .",
     "test": "node --test tests/*.test.js",
-    "check": "node --check app.js && node --check api.js && node --check domain.js && node --check i18n.js && node --check mock-data.js"
+    "test:integration": "node --test tests/live-api.integration.js",
+    "check": "node --check app.js && node --check api.js && node --check config.js && node --check domain.js && node --check i18n.js && node --check mock-data.js"
   }
 }

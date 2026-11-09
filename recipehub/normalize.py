@@ -200,6 +200,51 @@ def _wikibooks_sections(raw_html: str) -> tuple[list[Ingredient], list[str], str
     return ingredients, instructions, description
 
 
+def _wikibooks_details(raw_html: str) -> dict[str, Any]:
+    """Read only explicitly labeled Wikibooks infobox values and detail sections."""
+    soup = BeautifulSoup(raw_html, "html.parser")
+    root = soup.select_one(".mw-parser-output") or soup
+    for unwanted in root.select(".mw-editsection, .reference, .navbox, .ombox, script, style"):
+        unwanted.decompose()
+    fields: dict[str, str] = {}
+    for row in root.select("table.infobox tr"):
+        heading, cell = row.find("th"), row.find("td")
+        if not heading or not cell:
+            continue
+        text = clean_text(cell.get_text(" ", strip=True))
+        if not text and cell.find("img", alt=True):
+            text = clean_text(str(cell.find("img")["alt"]))
+        fields[clean_text(heading.get_text(" ", strip=True)).casefold()] = text
+    result: dict[str, Any] = {
+        "servings": fields.get("servings", ""),
+        "prep_minutes": parse_minutes(fields.get("preparation time", fields.get("prep time", ""))),
+        "cook_minutes": parse_minutes(fields.get("cooking time", fields.get("cook time", ""))),
+        "total_minutes": parse_minutes(fields.get("total time", fields.get("time", ""))),
+        "difficulty": fields.get("difficulty", ""),
+        "country": _infer_country(fields.get("cuisine", ""), fields.get("recipe origin", "")),
+        "tools": [], "tips": [], "source_infobox": fields,
+    }
+    active = ""
+    active_level = 0
+    for node in root.find_all(["h2", "h3", "h4", "li", "p"]):
+        if node.name.startswith("h"):
+            level = int(node.name[1])
+            heading = clean_text(node.get_text(" ", strip=True)).casefold()
+            if active and level <= active_level:
+                active = ""
+            if heading in {"equipment", "tools", "utensils"}:
+                active, active_level = "tools", level
+            elif heading in {"tips", "notes", "notes, tips, and variations"}:
+                active, active_level = "tips", level
+        elif active:
+            if node.name == "p" and node.find_parent("li"):
+                continue
+            text = clean_text(node.get_text(" ", strip=True))
+            if text:
+                result[active].append(text)
+    return result
+
+
 def _schema_org_text(value: object) -> str:
     if isinstance(value, str):
         return clean_text(value)
@@ -310,22 +355,23 @@ def normalize_raw_envelope(envelope: dict[str, Any]) -> RecipeRecord:
             for item in raw_categories if isinstance(item, dict)
         ]
         ingredients, instructions, description = _wikibooks_sections(raw_html)
-        country = _infer_country(title, *categories)
+        details = _wikibooks_details(raw_html)
+        country = details["country"] or _infer_country(title, *categories)
         image_url = ""
         original_recipe_url = ""
-        servings = ""
-        prep_minutes = None
-        cook_minutes = None
-        total_minutes = None
-        difficulty = ""
-        tools = []
-        tips = []
+        servings = details["servings"]
+        prep_minutes = details["prep_minutes"]
+        cook_minutes = details["cook_minutes"]
+        total_minutes = details["total_minutes"]
+        difficulty = details["difficulty"]
+        tools = details["tools"]
+        tips = details["tips"]
         substitutions = []
         allergens = []
         nutrition = None
         language = str(envelope.get("language", "en"))
         source_updated_at = clean_text(str(parsed.get("timestamp") or ""))
-        metadata = {"page_id": parsed.get("pageid"), "revision_id": parsed.get("revid")}
+        metadata = {"page_id": parsed.get("pageid"), "revision_id": parsed.get("revid"), "source_infobox": details["source_infobox"]}
     elif source_type == "schema_org_recipe":
         recipe = payload.get("json_ld")
         if not isinstance(recipe, dict):

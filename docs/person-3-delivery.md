@@ -1,30 +1,30 @@
-# Person 3 delivery — Knowledge Base and HTTP API
+# Person 3 delivery — Knowledge Base, API, and Gemini integration
 
 **Contributor:** Nguyễn Dũng (`2474802015692`).
-**Component:** local recipe database, retrieval endpoints, and source-grounded chat service.
+**Component:** SQLite knowledge base, retrieval, HTTP API, source-grounded chat, and optional Gemini integration.
 
 ## Implementation
 
-- `recipehub/knowledge_base.py` rebuilds a SQLite database from normalized JSON records. It preserves provider-specific record IDs and stores each complete record as JSON.
-- SQLite FTS5 indexes recipe titles, descriptions, regions, categories, and ingredient wording. If the local Python SQLite build does not include FTS5, the knowledge base falls back to text matching.
-- Search supports query terms, region, category, difficulty, maximum total time, ingredient exclusions, declared-allergen filtering, sorting, and pagination. Unknown cooking times are excluded when a time ceiling is active.
-- `recipehub/api.py` implements the frontend contract: `/api/v1/facets`, `/api/v1/recipes`, `/api/v1/recipes/{record_id}`, and `/api/v1/chat`. It also provides `/api/v1/health`.
-- The same local HTTP server serves `frontend/`, so the website and API run at `http://127.0.0.1:8000` without a separate web framework or external model service.
-- Without a model configured, conversation responses are deterministic retrieval from indexed records. An optional OpenAI-compatible chat completion endpoint can phrase answers more flexibly using only retrieved records. The key is read from the server-side `.env`, never from the browser. Short follow-ups use the session's latest citation IDs.
+- `recipehub/knowledge_base.py` imports normalized RecipeRecord files into SQLite and indexes recipe titles, descriptions, regions, categories, and ingredients with FTS5. Search supports filters, sorting, pagination, and ingredient exclusions.
+- `recipehub/conversation.py` searches the collection before answering, keeps short-lived session context in SQLite, applies ingredient exclusions again on follow-up questions, and returns citations for retrieved records.
+- `recipehub/server.py` implements `/api/v1/health`, `/facets`, `/recipes`, `/recipes/{record_id}`, and `/chat`, and serves the files in `frontend/` from the same local origin.
+- `recipehub/gemini.py` sends model requests from the server using `RECIPEHUB_LLM_API_KEY`; the browser never receives this key. Gemini can produce answers grounded in retrieved records, translate recipe fields for the selected interface language, and use Google Search grounding to find missing recipes.
+- Web-discovered pages are collected only when they contain Schema.org `Recipe` JSON-LD. Their original URL is retained, and the page is saved, normalized, and indexed before it can be cited. Reuse terms must still be checked by the project team.
+- Successful translations are cached in `data/state/translation_cache.json`. The recipe source record itself is not overwritten by translated display text.
 
 ## Build and run
 
 ```powershell
-python -m recipehub.cli crawl --max-items 10
-python -m recipehub.cli normalize
-python -m recipehub.cli build
-python -m recipehub.cli serve
+.\.venv\Scripts\python.exe -m recipehub.cli crawl --max-items 10
+.\.venv\Scripts\python.exe -m recipehub.cli normalize
+.\.venv\Scripts\python.exe -m recipehub.cli build
+.\.venv\Scripts\python.exe -m recipehub.cli serve
 ```
 
-For recurring collection, run `python -m recipehub.cli schedule --minutes 30 --max-items 10` in a second terminal. The first run starts immediately; later runs are spaced 30 minutes apart by start time.
+The service opens at `http://127.0.0.1:8000`. For recurring collection, run `python -m recipehub.cli schedule --minutes 30 --max-items 10` in a second terminal. The scheduler starts immediately, then repeats at the selected interval while that process and computer remain running.
 
-The database is generated at `data/state/recipes.sqlite3` and is ignored by Git. Run `build` again after importing or normalizing new data. The local scheduler performs crawl, normalization, and index rebuild on each run.
+The SQLite database is generated at `data/knowledge_base.sqlite3`; raw and processed records and crawler state are stored under `data/`. These files persist when the website server stops. Conversation context is stored in SQLite and expires after one hour.
 
 ## Limits
 
-This is a local course proof of concept. Conversation sessions live in memory and reset when the server restarts. There is no authentication, public deployment, or hosted database. Without an optional model, full-text matching and rule-based intents do not interpret every natural-language request. Ingredient exclusions cannot establish medical safety; source allergen data may be incomplete. Empty source fields remain unknown rather than inferred.
+This is a local course proof of concept without authentication or public hosting. Gemini is optional and depends on a valid key, model access, network availability, and account quota. When it is unavailable, the knowledge base and deterministic retrieval remain usable, but natural-language generation, web discovery, and translation may not work. Only source-supported facts are used for recipe details; allergy exclusions are text matching and cannot establish medical safety. Missing fields remain unknown.

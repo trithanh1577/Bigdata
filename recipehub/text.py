@@ -29,7 +29,9 @@ CULINARY_TERM_ALIASES = {
 def clean_text(value: str | None) -> str:
     if not value:
         return ""
-    decoded = BeautifulSoup(html.unescape(value), "html.parser").get_text(" ")
+    decoded = html.unescape(value)
+    if "<" in decoded and ">" in decoded:
+        decoded = BeautifulSoup(decoded, "html.parser").get_text(" ")
     return WHITESPACE_RE.sub(" ", unicodedata.normalize("NFC", decoded)).strip()
 
 

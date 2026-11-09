@@ -30,13 +30,13 @@
 
 ## ADR-005: Run collection on a configurable interval
 
-**Decision:** The local scheduler defaults to daily and supports intervals in minutes or days. A 30-minute schedule is available with `schedule --minutes 30`.
+**Decision:** The local scheduler defaults to daily and supports intervals in minutes or days. A 5- or 30-minute schedule is available with `schedule --minutes 5` or `schedule --minutes 30`.
 
 **Reason:** The interval can be selected for the demonstration or source update rate. Each API request is delayed; transient network errors, HTTP 429, and HTTP 5xx responses are retried with bounded waits. TheMealDB area cursors and the Wikibooks category continuation token are persisted in `data/state/crawl_cursors.json` so scheduled runs can advance through source results. The schedule is local and requires the process and computer to remain running.
 
 ## ADR-006: Separate ingestion, backend, and website ownership
 
-**Decision:** Keep Person 1's source ingestion/raw lake and Person 2's normalization/quality report separate from Persons 3–4's components. Person 3's local SQLite/FTS knowledge base and HTTP API are implemented in `recipehub/knowledge_base.py` and `recipehub/api.py`. Person 4's website is implemented in `frontend/` and consumes the API by default.
+**Decision:** Keep Person 1's source ingestion/raw lake and Person 2's normalization/quality report separate from Persons 3–4's components. Person 3's SQLite/FTS knowledge base, conversation service, Gemini integration, and HTTP API are implemented in `recipehub/knowledge_base.py`, `recipehub/conversation.py`, `recipehub/gemini.py`, and `recipehub/server.py`. Person 4's website is implemented in `frontend/` and consumes the API by default.
 
 **Reason:** Separating component ownership allows the crawler/normalizer pair and the backend/frontend pair to develop concurrently against the schema and integration contract.
 
@@ -46,4 +46,4 @@
 
 **Reason:** Person 4 can deliver and demonstrate the interface before Person 3's backend exists. A static website works with the repository's existing Python tooling and requires no frontend build service. Separating the HTTP adapter keeps future integration changes out of the rendering layer.
 
-**Trade-off:** The backend uses deterministic retrieval by default and can optionally call Gemini through Google's native `generateContent` API using a server-side `.env` key. It can translate English/Vietnamese questions and recipe content to the selected interface language. Raw snapshots, normalized records, crawl state, and the SQLite knowledge base are stored on disk; chat sessions remain in memory for the local process. Dietary exclusions are text matches with incomplete source data. The proof of concept has no authentication or public hosting.
+**Trade-off:** The backend uses deterministic retrieval by default and can optionally call Gemini through Google's native `generateContent` API using a server-side `.env` key. It can translate recipe content for the selected interface language and use Google Search grounding to discover pages that publish Schema.org Recipe JSON-LD. Raw snapshots, normalized records, crawl state, translation cache, conversation context, and the SQLite knowledge base are stored on disk. Dietary exclusions are text matches with incomplete source data. The proof of concept has no authentication or public hosting.

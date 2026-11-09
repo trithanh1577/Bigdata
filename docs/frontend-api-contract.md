@@ -1,6 +1,6 @@
 # Website API contract — Person 3 ↔ Person 4
 
-**Status:** implemented locally by `recipehub/api.py`. The website uses these endpoint shapes in API mode. The service is a local proof of concept; it is not a hosted public deployment.
+**Status:** implemented locally by `recipehub/server.py`. The website uses these endpoint shapes in API mode. The service is a local proof of concept; it is not a hosted public deployment.
 
 **Website owner:** Nguyễn Trần Hoàng Nhân — `2474802010272`.
 
@@ -18,7 +18,7 @@ window.RECIPEHUB_CONFIG = {
 };
 ```
 
-Run `python -m recipehub.cli serve` to serve the frontend and API together. The website derives its API base URL from its current origin, so the selected server port can vary. Use `mode: "mock"` only for independent UI development. API mode never silently falls back to demo data. The frontend configuration is public and must not contain secrets. The local service has no authentication or hosted-session persistence. If serving the frontend separately, set `apiBaseUrl` to the API server and configure `RECIPEHUB_CORS_ORIGINS` to include the frontend's exact origin; JSON POST preflights are supported. For an HTTPS deployment, use an HTTPS API URL or a same-origin reverse proxy.
+Run `python -m recipehub.cli serve` to serve the frontend and API together. The website derives its API base URL from its current origin. Use `mode: "mock"` only for independent UI development. API mode never silently falls back to demo data. The frontend configuration is public and must not contain secrets. The local service has no authentication. If serving the frontend separately, pass its exact origin with `--allow-origin` when starting the API; JSON POST preflights are supported.
 
 All successful responses use `application/json`. Use appropriate HTTP status codes (`400`, `404`, `429`, `500`, `503`) for failures. The UI exposes HTTP status, timeouts, connection failures, and invalid response shapes with retry paths; it does not render server error HTML. Record text is rendered as plain text, including conversation answers; source links accept only absolute HTTP(S) URLs.
 
@@ -40,13 +40,13 @@ The API honors the `Accept-Language` header (`vi` or `en`). With a configured mo
 
 ## GET `/health`
 
-Returns the indexed recipe count plus booleans `language_model_available` and `web_discovery_available`. The latter is true only when a Gemini model is configured; other OpenAI-compatible models can answer and translate but do not enable Google's web search grounding. Gemini chat and translation use Google's native `generateContent` API with the server-side API key.
+Returns the indexed recipe count plus booleans `language_model_available` and `web_discovery_available`. Both indicate whether the server has Gemini endpoint, model, and key settings; they do not verify the key's validity, quota, or network access. Gemini chat, translation, and Google Search grounding use Google's `generateContent` API with the server-side `.env` key.
 
 ## GET `/recipes`
 
 | Parameter | Meaning |
 | --- | --- |
-| `q` | Optional search string. The mock requires every whitespace-separated term to occur in the combined title, description, region, categories, or ingredient names, ignoring case and accents. Person 3 may improve ranking with full-text search. |
+| `q` | Optional search string. SQLite FTS5 searches the title, description, region, categories, and ingredient names. |
 | `country` | Exact `country_or_region` facet value. |
 | `category` | Exact member of `categories`. |
 | `difficulty` | Exact source-declared difficulty. |
@@ -119,7 +119,7 @@ Example response shape (placeholder values, not actual recipe data):
 }
 ```
 
-The client carries the returned session ID into the next request. The server keeps the latest five exchanges and cited record IDs in process memory to answer follow-ups; it ignores client-provided history as authoritative evidence. **New conversation** starts a new session. Server sessions and conversation context reset when the local service restarts.
+The client carries the returned session ID into the next request. The server keeps retrieved record IDs and ingredient exclusions in SQLite for follow-up questions; the context expires after one hour. It ignores client-provided history as authoritative recipe evidence. **New conversation** starts a new session. Session context can survive a server restart while it remains within its expiry period; full message transcripts are not stored.
 
 Apply current country/category/time/difficulty/exclusion/allergen preferences to retrieval. The user can ask in English or Vietnamese; if the local English-language records do not match, Gemini translates the search terms into English for retrieval. Answer in the interface language supplied by the client. Treat the conversational message as the new query; the previous search `q` is context, not a mandatory second query. Re-evaluate preferences on every turn, including follow-ups, so earlier records cannot bypass newly applied exclusions. Citation IDs must resolve through the detail endpoint. The UI opens those records and shows provider links when available.
 
