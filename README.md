@@ -2,7 +2,7 @@
 
 Dự án cuối kỳ xây dựng kho tri thức ẩm thực và website **Trợ lý nhà bếp**. Hệ thống thu thập công thức từ API hoặc trang web công khai, lưu bản gốc vào data lake, chuẩn hóa dữ liệu, lập chỉ mục bằng SQLite rồi cung cấp tìm kiếm, bộ lọc, trang chi tiết và hỏi đáp có trích dẫn nguồn.
 
-Người dùng có thể hỏi bằng tiếng Việt hoặc tiếng Anh. Backend tìm trong bộ sưu tập trước; nếu không có công thức phù hợp và Gemini đã được cấu hình, hệ thống tìm trang công thức trên web, chỉ lưu trang có Schema.org `Recipe` dạng JSON-LD, sau đó chuẩn hóa và lập chỉ mục trước khi trả lời. Nội dung công thức có thể được dịch theo ngôn ngữ giao diện; các liên kết, nguồn, giấy phép và thông tin ghi công vẫn giữ nguyên.
+Người dùng có thể hỏi bằng tiếng Việt hoặc tiếng Anh. Backend tìm trong bộ sưu tập trước; nếu không có công thức phù hợp và Gemini đã được cấu hình, hệ thống tìm trang công thức trên web, chỉ lưu trang có Schema.org `Recipe` dạng JSON-LD, sau đó chuẩn hóa và lập chỉ mục trước khi trả lời. Câu trả lời chat theo ngôn ngữ câu hỏi khi nhận diện được; nếu không, dùng ngôn ngữ giao diện. Nội dung công thức có thể được dịch theo ngôn ngữ giao diện; các liên kết, nguồn, giấy phép và thông tin ghi công vẫn giữ nguyên.
 
 Gemini là tùy chọn. Không có Gemini, website vẫn tìm và trả lời theo các trường có trong cơ sở dữ liệu nhưng không thể dịch nội dung tùy ý hay tự tìm món mới. Khóa API chỉ nằm trong `.env` ở backend, không nằm trong frontend. Câu trả lời về dị ứng không xác nhận món ăn an toàn; bộ lọc nguyên liệu không phát hiện được mọi tên gọi, nguyên liệu ẩn hoặc lây nhiễm chéo.
 

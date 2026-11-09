@@ -181,7 +181,8 @@ class RecipeHandler(BaseHTTPRequestHandler):
             # not treated as source evidence.
             answer = self.server.conversation.answer(body.get("message"), body.get("filters"), body.get("session_id"), language)
             if answer["citations"]:
-                titles, _ = self.server.translator.translate([item["title"] for item in answer["citations"]], language)
+                answer_language = answer.get("language", language)
+                titles, _ = self.server.translator.translate([item["title"] for item in answer["citations"]], answer_language)
                 for citation, title in zip(answer["citations"], titles, strict=True):
                     citation["title"] = title
             self._json(answer)

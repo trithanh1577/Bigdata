@@ -26,6 +26,7 @@ REGION_ALIASES = (
 )
 STOP_WORDS = set("a an the i me my we us you your please can could would should do does did to of for from in on at by some any with and or that this these those it its them their find search show suggest recommend recipe recipes dish dishes meal meals cook cooking make something want like need what which how are is have has goes into about tell try list ingredients ingredient steps step instructions instruction method preparation source sources provenance attribution time minutes minute min under within less than up total takes take difficulty easy hard nutrition calories calorie allergens allergen substitutions substitution substitute replace alternatives alternative instead tools equipment tips tip explain".split())
 STOP_WORDS.update("toi minh ban muon lam mon an tim co hay giup nha".split())
+VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich pho bun bo com canh gi nao bi ung cho thay".split())
 LOGGER = logging.getLogger(__name__)
 
 
@@ -35,6 +36,15 @@ class SessionNotFound(ValueError):
 
 def contains_phrase(text: str, phrase: str) -> bool:
     return bool(re.search(r"(?<!\w)" + re.escape(fold(phrase)) + r"(?!\w)", text))
+
+
+def response_language(message: str, preferred: str) -> str:
+    """Use the language of a clearly Vietnamese question; otherwise keep the UI choice."""
+    if re.search(r"[ăâđêôơưĂÂĐÊÔƠƯáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]", message):
+        return "vi"
+    if set(query_tokens(message)) & VIETNAMESE_SIGNALS:
+        return "vi"
+    return preferred if preferred in {"en", "vi"} else "en"
 
 
 def citation(recipe: dict[str, Any]) -> dict[str, str]:
@@ -145,31 +155,31 @@ class ConversationService:
         except (GeminiUnavailable, ValueError, TypeError, AttributeError):
             return ""
 
-    def _discover_and_index(self, query: str, language: str, exclusions: list[str]) -> bool:
+    def _discover_and_index(self, query: str, language: str, exclusions: list[str]) -> tuple[bool, str, int | None]:
         if not self.gemini.web_discovery_available:
-            return False
+            return False, "not_configured", None
         query_key = fold(query) + "\0" + " ".join(sorted(fold(item) for item in exclusions))
         with self._discovery_lock:
             if query_key in self._discovered:
-                return False
+                return False, "already_attempted", None
             self._discovered.add(query_key)
         success = False
         try:
             pages = self.gemini.search_recipe_pages(query, language, exclusions)
             if not pages:
-                return False
+                return False, "no_search_results", None
             saved = self.crawler.collect_discovered_recipe_pages(pages)
             if not saved:
-                return False
+                return False, "no_recipe_jsonld", None
             normalized = NormalizationPipeline(self.settings).run()
             imported = self.store.import_processed(self.settings.processed_dir)
             indexed_count = imported.get("inserted", 0) + imported.get("updated", 0) + imported.get("unchanged", 0)
             LOGGER.info("Recipe discovery saved %s page(s); normalized %s and indexed %s recipe(s)", saved, normalized.get("processed", 0), indexed_count)
             success = True
-            return True
+            return True, "indexed", None
         except (GeminiUnavailable, OSError, ValueError, TypeError) as exc:
             LOGGER.warning("Recipe discovery failed (%s)", getattr(exc, "status_code", None) or type(exc).__name__)
-            return False
+            return False, "gemini_error" if isinstance(exc, GeminiUnavailable) else "collection_error", getattr(exc, "status_code", None)
         finally:
             if not success:
                 with self._discovery_lock:
@@ -238,7 +248,7 @@ class ConversationService:
     ) -> dict[str, Any]:
         if not isinstance(message, str) or not message.strip() or len(message) > 1000:
             raise ValueError("message must contain 1–1000 characters")
-        language = language if language in {"en", "vi"} else "en"
+        language = response_language(message, language)
         if session_id is not None and (not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,64}", session_id)):
             raise ValueError("session_id must be null or a valid conversation token")
         preferences = parse_filters(filters or {})
@@ -260,6 +270,8 @@ class ConversationService:
         has_context = bool(context.get("record_ids"))
         records = self.store.eligible(context.get("record_ids", []), preferences) if follow_up else []
         search_query = ""
+        discovery_state = "not_configured" if not self.gemini.web_discovery_available else "not_attempted"
+        discovery_status: int | None = None
         if not (follow_up and has_context):
             records = self._retrieve(question, preferences)
         if not records and language == "vi":
@@ -267,16 +279,61 @@ class ConversationService:
             if search_query:
                 records = self._retrieve(search_query, preferences, search_query)
         if not records and self.gemini.web_discovery_available:
-            if self._discover_and_index(message, language, preferences["exclude_ingredients"]):
+            discovered, discovery_state, discovery_status = self._discover_and_index(message, language, preferences["exclude_ingredients"])
+            if discovered:
                 if not search_query and language == "vi":
                     search_query = self._english_search_query(message)
                 records = self._retrieve(search_query or question, preferences, search_query)
         if not records:
-            text = (
-                "Chưa tìm thấy công thức phù hợp trong bộ sưu tập hoặc trên các trang đã tìm được. Hãy thử tên món khác hoặc nới bộ lọc."
-                if language == "vi"
-                else "I could not find a matching recipe in the collection or on the recipe pages searched. Try another dish name or relax the filters."
-            )
+            if discovery_state == "gemini_error" and discovery_status == 429:
+                text = (
+                    "Mình chưa tìm được công thức vì Gemini trả lỗi 429 (đang bị giới hạn hoặc hết hạn mức). Hãy kiểm tra hạn mức API rồi thử lại."
+                    if language == "vi" else
+                    "Gemini returned HTTP 429, so I could not complete the web search. Check the API quota or rate limit, then try again."
+                )
+            elif discovery_state == "gemini_error":
+                if discovery_status:
+                    text = (
+                        f"Gemini chưa thể tìm công thức (HTTP {discovery_status}). Hãy kiểm tra khóa API, quyền truy cập và kết nối rồi thử lại."
+                        if language == "vi" else
+                        f"Gemini could not search for a recipe (HTTP {discovery_status}). Check the API key, access, and connection, then retry."
+                    )
+                else:
+                    text = (
+                        "Gemini chưa thể tìm công thức do lỗi kết nối hoặc phản hồi API không hợp lệ. Hãy kiểm tra kết nối rồi thử lại."
+                        if language == "vi" else
+                        "Gemini could not search because of a network or API response error. Check the connection, then retry."
+                    )
+            elif discovery_state == "no_recipe_jsonld":
+                text = (
+                    "Mình tìm được trang nhưng chưa thu thập được trang nào có dữ liệu Recipe JSON-LD mà hệ thống hỗ trợ. Thử cách viết tên món khác hoặc chọn món khác nhé."
+                    if language == "vi" else
+                    "Search returned pages, but none could be collected as a supported Schema.org Recipe record. Try another spelling or dish."
+                )
+            elif discovery_state == "no_search_results":
+                text = (
+                    "Chưa tìm được trang công thức phù hợp trên web. Hãy thử tên món khác hoặc viết tên món bằng tiếng Anh."
+                    if language == "vi" else
+                    "Web search did not return a matching recipe page. Try another dish name or its English name."
+                )
+            elif discovery_state == "indexed":
+                text = (
+                    "Mình đã thu thập trang công thức nhưng chưa tìm thấy bản ghi khớp với câu hỏi. Hãy thử tên tiếng Anh hoặc cách viết khác của món."
+                    if language == "vi" else
+                    "I collected a recipe page but could not match its indexed record to the question. Try the English name or another spelling."
+                )
+            elif discovery_state == "not_configured":
+                text = (
+                    "Món này chưa có trong bộ sưu tập và Gemini chưa được cấu hình để tìm trên web."
+                    if language == "vi" else
+                    "This dish is not in the collection, and Gemini web discovery is not configured."
+                )
+            else:
+                text = (
+                    "Chưa tìm thấy công thức phù hợp trong bộ sưu tập hoặc trên web. Hãy thử tên món khác hoặc nới bộ lọc."
+                    if language == "vi" else
+                    "I could not find a matching recipe in the collection or on the web. Try another dish name or relax the filters."
+                )
         else:
             if intent != "discover":
                 records = records[:1]
@@ -300,4 +357,4 @@ class ConversationService:
         if records:
             context["record_ids"] = [record["record_id"] for record in records]
         self._save(session_id, context)
-        return {"answer": text, "session_id": session_id, "citations": [citation(record) for record in records]}
+        return {"answer": text, "session_id": session_id, "citations": [citation(record) for record in records], "language": language}
