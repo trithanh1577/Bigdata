@@ -16,7 +16,9 @@ TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 def clean_text(value: str | None) -> str:
     if not value:
         return ""
-    decoded = BeautifulSoup(html.unescape(value), "html.parser").get_text(" ")
+    decoded = html.unescape(value)
+    if "<" in decoded and ">" in decoded:
+        decoded = BeautifulSoup(decoded, "html.parser").get_text(" ")
     return WHITESPACE_RE.sub(" ", unicodedata.normalize("NFC", decoded)).strip()
 
 

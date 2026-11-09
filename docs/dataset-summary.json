@@ -1,0 +1,47 @@
+{
+  "verified_on": "2026-11-09",
+  "scope": "Local verification snapshot; source content and SQLite runtime data are Git-ignored.",
+  "raw_snapshots": 140,
+  "indexed_recipes": 137,
+  "invalid_latest_records": 0,
+  "sources": {
+    "TheMealDB": 72,
+    "Wikibooks Cookbook": 65
+  },
+  "countries_or_regions": {
+    "": 34,
+    "African": 2,
+    "Chinese": 1,
+    "Indonesian": 2,
+    "Italian": 22,
+    "Japanese": 9,
+    "Nigeria": 4,
+    "Nigerian": 20,
+    "Scottish": 1,
+    "Swedish": 1,
+    "Thai": 21,
+    "Vietnamese": 20
+  },
+  "missing_source_fields": {
+    "total_minutes": 98,
+    "difficulty": 77,
+    "allergens": 137,
+    "nutrition": 137,
+    "substitutions": 137,
+    "country_or_region": 34
+  },
+  "duplicate_candidate_groups": 0,
+  "configured_themealdb_regions": [
+    "Italian",
+    "Japanese",
+    "Thai",
+    "Vietnamese",
+    "Chinese"
+  ],
+  "notes": [
+    "Raw snapshots retain history; repeated provider records normalize into one current provider-specific record.",
+    "Source region labels are preserved; country and nationality labels can coexist.",
+    "Empty country/region and missing allergens/nutrition/substitutions mean unknown.",
+    "These counts describe this local run and may differ after a fresh crawl."
+  ]
+}

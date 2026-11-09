@@ -27,7 +27,14 @@ export function createClient(config = {}, fetchImpl = globalThis.fetch) {
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
       const response = await fetchImpl(`${baseUrl}${path}`, { ...options, signal: controller.signal, headers: { Accept: "application/json", ...(options.body ? { "Content-Type": "application/json" } : {}) } });
-      if (!response.ok) throw new Error(`The recipe service returned HTTP ${response.status}. Please try again.`);
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const error = await response.json();
+          if (typeof error?.error?.message === "string") detail = error.error.message;
+        } catch { /* Non-JSON service errors still preserve the HTTP status. */ }
+        throw new Error(`The recipe service returned HTTP ${response.status}. ${detail || "Please try again."}`);
+      }
       return await response.json();
     } catch (error) {
       if (error.name === "AbortError") throw new Error("The recipe service took too long to respond. Please try again.");

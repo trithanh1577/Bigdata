@@ -32,6 +32,7 @@ class Settings:
     raw_dir: Path = PROJECT_ROOT / "data" / "raw"
     processed_dir: Path = PROJECT_ROOT / "data" / "processed"
     state_dir: Path = PROJECT_ROOT / "data" / "state"
+    database_path: Path = PROJECT_ROOT / "data" / "knowledge_base.sqlite3"
     user_agent: str = os.getenv(
         "CRAWLER_USER_AGENT", "GlobalCulinaryKnowledgeBase/1.0 (student project)"
     )

@@ -2,9 +2,35 @@
 
 A multi-region culinary knowledge project: collect recipes from Internet sources, retain raw API snapshots, normalize records into a shared schema, and expose them through a searchable website and source-grounded conversation interface.
 
-**Implemented:** Persons 1–2's crawler, local data lake, and normalization pipeline; Person 4's English website with synthetic demo responses and a configurable HTTP adapter. **Pending:** Person 3's database, search/answer API, and live website integration. The demo is not the collected dataset.
+**Implemented:** all four members' components: API crawlers, raw/processed data lake, validation reports, SQLite knowledge base with FTS5, an HTTP search/answer service, and the connected English website. The answer service extracts facts from retrieved records and cites them; no LLM key is required. A separate synthetic UI demo remains available.
 
-## Run the website — Person 4
+## Run the complete application
+
+Python 3.11+ with SQLite FTS5 is required. From the repository root in PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Collect and prepare source data on the first run (about several minutes at the configured rate limit):
+
+```powershell
+$env:CRAWLER_USER_AGENT = 'GlobalCulinaryKnowledgeBase/1.0 (https://github.com/trithanh1577/Bigdata)'
+.\.venv\Scripts\python.exe -m recipehub.cli pipeline --max-items 65
+```
+
+Start the connected website and backend:
+
+```powershell
+.\.venv\Scripts\python.exe -m recipehub.cli serve
+```
+
+Open **http://127.0.0.1:8000**. The server supplies same-origin API configuration automatically and indexes the current processed manifest at startup. If this workspace already contains collected data, run `serve` directly. An empty dataset produces an empty collection; it is never silently replaced with fake recipes. `Ctrl+C` stops the server.
+
+The latest local verification produced **137 indexed recipes** from TheMealDB and Wikibooks Cookbook, with five configured TheMealDB regions (Italian, Japanese, Thai, Vietnamese, Chinese). This is a dated local run, not a guarantee of future API output. Generated data and the database are Git-ignored; a fresh clone must run the pipeline. See [the dataset summary](docs/dataset-summary.json) and [the team demonstration guide](docs/team-demo.md).
+
+## Run the standalone website demo — Person 4
 
 From the repository root, using Python 3.11 or later:
 
@@ -25,9 +51,9 @@ The website, **Recipe Atlas**, includes:
 
 The default collection contains **eight synthetic teaching records across five regions**. All demo content is labeled; illustrations are decorative. The demo companion performs local deterministic retrieval rather than calling an AI model. Missing fields remain unknown, and ingredient matching does not guarantee dietary safety.
 
-To connect Person 3's backend, review [the proposed API contract](docs/frontend-api-contract.md), then change `mode` to `"api"` and set `apiBaseUrl` in [`frontend/config.js`](frontend/config.js). No backend is currently provided. API mode shows errors when the service is unavailable and never silently substitutes demo records.
+The integrated `serve` command connects Person 3's backend automatically. To serve the frontend on a separate port, follow [the API contract](docs/frontend-api-contract.md), change `mode` to `"api"`, and set `apiBaseUrl` in [`frontend/config.js`](frontend/config.js). API mode shows errors when the service is unavailable and never silently substitutes demo records.
 
-See [Person 4's delivery report and demonstration guide](docs/person-4-delivery.md) for the English component description, assignment coverage, demo script, and handoff limits.
+See [Person 4's delivery report](docs/person-4-delivery.md) for the English component description, assignment coverage, and standalone demo script.
 
 ## Architecture and data flow
 
@@ -38,10 +64,10 @@ Wikibooks API ┘                                                │
                                                               v
                                                     data/processed/
                                                               │
-                                             Person 3 database / API (pending)
+                                               SQLite FTS5 / HTTP API
                                                               │
                                                               v
-                                                 Person 4 website (implemented)
+                                                  Person 4 website
                                                  ↑
                                       Synthetic mock adapter (default)
 ```
@@ -77,6 +103,9 @@ recipehub/
   text.py                       String cleanup, normalization, IDs/hashes
   config.py                     Paths, source configuration, crawler settings
   cli.py                        crawl / normalize / schedule / stats
+  knowledge_base.py             Person 3: SQLite, FTS5, relational filters
+  conversation.py               Source-extractive answers and expiring sessions
+  server.py                     HTTP API and connected website hosting
 frontend/
   index.html                    Person 4: discovery, detail, and chat interface
   styles.css                    Responsive styling and CSS illustrations
@@ -110,23 +139,23 @@ tests/                          Python parser, crawler, and pipeline tests
 
 **Persons 1–2 coordination:** agree on the schema and a raw-to-processed example first. Person 1 owns `recipe_crawler.py` and source configuration; Person 2 owns normalization/schema. Review the contract together and coordinate edits to shared files.
 
-### Person 3 — Nguyễn Dũng (`2474802015692`) — pending
+### Person 3 — Nguyễn Dũng (`2474802015692`) — implemented
 
 - Build a database/knowledge base from processed records, with exact queries and full-text search.
 - Implement recipe search, filters, details, and source-cited answers through an HTTP API.
 - Manage conversation context. If using an LLM, synthesize only retrieved facts and do not invent ingredients, allergens, or nutrition.
 - Respect ingredient exclusions and only offer substitutions supported by source data; do not claim medical safety.
 - Consider vector retrieval after the SQL/full-text baseline works.
-- Review [the website API proposal](docs/frontend-api-contract.md) with Person 4 before integration.
+- Provide the implemented [website API contract](docs/frontend-api-contract.md), including health, search, facets, details, and conversation.
 
-### Person 4 — Nguyễn Trần Hoàng Nhân (`2474802010272`) — implemented with mocks
+### Person 4 — Nguyễn Trần Hoàng Nhân (`2474802010272`) — implemented and integrated
 
 - Build the English recipe discovery website and conversation interface.
 - Display recipes and attribution; offer region/category/time/difficulty filters when values exist.
 - Accept ingredient-avoidance preferences and clearly communicate source/data limitations.
 - Develop against mock responses in parallel, then connect the backend through the HTTP adapter.
 
-Code is in [`frontend/`](frontend/); the English [delivery report](docs/person-4-delivery.md) describes the implementation and remaining backend dependency.
+Code is in [`frontend/`](frontend/). English delivery reports are available for [Person 1](docs/person-1-delivery.md), [Person 2](docs/person-2-delivery.md), [Person 3](docs/person-3-delivery.md), and [Person 4](docs/person-4-delivery.md).
 
 ## Run ingestion and normalization — Persons 1–2
 
@@ -138,23 +167,24 @@ python -m venv .venv
 Copy-Item .env.example .env
 ```
 
-Before crawling, edit `.env` and replace `CRAWLER_USER_AGENT` with a bot name that includes a real contact email or public project URL, following [Wikimedia's API access policy](https://www.mediawiki.org/wiki/Wikimedia_APIs/Access_policy). Placeholder contact details are rejected. To skip Wikibooks temporarily, set its source configuration to `"enabled": false`. Never commit `.env` or secrets.
+Before crawling, ensure `CRAWLER_USER_AGENT` contains a real contact email or public project URL, following [Wikimedia's API access policy](https://www.mediawiki.org/wiki/Wikimedia_APIs/Access_policy). The example uses this project's public repository URL. Placeholder contact details are rejected. To skip Wikibooks temporarily, set its source configuration to `"enabled": false`, or select only TheMealDB with `crawl --source themealdb`. Never commit `.env` or secrets.
 
 Crawl at most ten recipes per enabled source, then normalize and inspect coverage:
 
 ```powershell
 .\.venv\Scripts\python.exe -m recipehub.cli crawl --max-items 10
 .\.venv\Scripts\python.exe -m recipehub.cli normalize
+.\.venv\Scripts\python.exe -m recipehub.cli index
 .\.venv\Scripts\python.exe -m recipehub.cli stats
 ```
 
-Run crawl followed by normalization daily; use `--days 7` for weekly collection. Keep the terminal open and stop with `Ctrl+C`:
+Run crawl, normalization, and database synchronization daily; use `--days 7` for weekly collection. Keep the terminal open and stop with `Ctrl+C`:
 
 ```powershell
 .\.venv\Scripts\python.exe -m recipehub.cli schedule --days 1 --max-items 10
 ```
 
-TheMealDB persists its last meal ID per region, while Wikibooks persists category continuation tokens. Progress is stored in `data/state/crawl_cursors.json`. Each raw snapshot appends a manifest entry with run/source IDs, source URL, collection time, and relative snapshot path. Repeated crawls preserve history. Normalization selects the latest snapshot for each provider record. Crawl and normalize commands return nonzero status for source failures or invalid records and print JSON diagnostics.
+TheMealDB persists its last meal ID per region, while Wikibooks persists category continuation tokens for Cookbook namespace 102. Progress is stored in `data/state/crawl_cursors.json`. Each raw snapshot appends a manifest entry with run/source IDs, source URL, collection time, and relative snapshot path. Repeated crawls preserve history. Normalization compares timezone-aware collection timestamps and emits an authoritative list of accepted processed files. Indexing synchronizes that list transactionally, removing stale database derivatives while retaining raw history. Crawl and normalize commands return nonzero status for source failures or invalid records and print JSON diagnostics.
 
 Generated data is ignored by Git so raw recipe content, processed records, runtime state, and local databases are not published accidentally.
 
@@ -175,12 +205,18 @@ npm run check
 npm test
 ```
 
-GitHub Actions runs both suites. See the delivery guide for the manual browser demonstration and backend integration checklist.
+With the connected server running and collected data available, run the real HTTP frontend integration checks from `frontend/`:
+
+```powershell
+npm run test:integration
+```
+
+GitHub Actions runs the offline Python and frontend suites. The live integration checks are explicit because they require collected data and a running server. See [the team guide](docs/team-demo.md) for a complete demonstration.
 
 ## Proof-of-concept limits
 
 The crawler/normalizer produces a local data lake, not a distributed storage system. Parser quality depends on source structure. A vector database is an optional retrieval tool and is not itself the entire knowledge base.
 
-The website currently demonstrates its flows against synthetic fixtures. The database, live backend, and LLM answer service are pending. Demo chat supports limited English lookup and follow-up patterns. API integration requires Person 3's compatible implementation and CORS setup.
+The complete application is a local classroom PoC. Its HTTP server binds to loopback by default and does not implement production authentication or TLS. The answer service uses deterministic English retrieval and source extraction; it is not a general-purpose language model. Conversation context expires after one hour and is isolated by a random bearer token; only record IDs and conversational exclusion terms are retained, not full message history. A separate mock UI mode remains available for offline presentation.
 
 Current providers do not offer complete structured allergen or substitution data. Empty declarations mean unknown. Ingredient exclusions use text matching and cannot check all aliases, hidden ingredients, or cross-contact. Neither filtering nor conversation should be presented as a medical safety guarantee. Missing source fields remain empty/null and are explicitly labeled in the interface.

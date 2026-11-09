@@ -36,14 +36,34 @@
 
 ## ADR-006: Separate ingestion, backend, and website ownership
 
-**Decision:** Keep Person 1's source ingestion/raw lake and Person 2's normalization/quality report separate from Persons 3–4's components. Person 4's website is now implemented in `frontend/` with a mock adapter and configurable HTTP adapter. Relational knowledge base, full-text/vector retrieval, and the answer API remain Person 3's implementation work.
+**Decision:** Keep source ingestion, normalization, storage/answers, and presentation in separate modules. All four components are implemented. Person 3's SQLite/API backend consumes Person 2's processed manifest and supplies Person 4's website through the shared HTTP contract.
 
 **Reason:** Separating component ownership allows the crawler/normalizer pair and the backend/frontend pair to develop concurrently against the schema and integration contract.
 
 ## ADR-007: Build a dependency-free static website with interchangeable data adapters
 
-**Decision:** Use HTML, CSS, and JavaScript modules for the English website. Provide explicit mock/API modes, a synthetic fixture collection, and a proposed frontend API contract. Show missing source fields rather than inferring them, and preserve separate provider records in recipe details and citations.
+**Decision:** Use HTML, CSS, and JavaScript modules for the English website. Provide explicit mock/API modes, a synthetic fixture collection, and an implemented frontend API contract. Show missing source fields rather than inferring them, and preserve separate provider records in recipe details and citations.
 
 **Reason:** Person 4 can deliver and demonstrate the interface before Person 3's backend exists. A static website works with the repository's existing Python tooling and requires no frontend build service. Separating the HTTP adapter keeps future integration changes out of the rendering layer.
 
-**Trade-off:** The local companion is deterministic demo retrieval, not an LLM. Dietary exclusions are text matches with incomplete source data. Live retrieval, session management, answer grounding, and production authentication belong to the backend. No live integration is claimed until that service is available.
+**Trade-off:** The mock companion and integrated source-extractive companion are deterministic, not LLMs. Dietary exclusions are text matches with incomplete source data. The backend owns retrieval and expiring session context. Production authentication remains outside this local PoC.
+
+## ADR-008: SQLite FTS5 and extractive answers before vector retrieval or an LLM
+
+**Decision:** Store complete schema-validated JSON alongside relational recipe/category/ingredient indexes and a Unicode FTS5 index. Use parameterized SQL, sanitized token-prefix queries, and provider-specific IDs. Answer supported English questions by quoting retrieved fields, with citations to the full source records. Keep unknown fields unknown.
+
+**Reason:** The 100–150-recipe classroom scale does not require a distributed database or embedding service. This baseline is reproducible without API keys, provides exact filters/full-text queries, and makes source grounding auditable.
+
+**Trade-off:** The parser supports bounded English patterns rather than arbitrary natural-language reasoning. FTS prefixes do not provide semantic synonym matching. Vector retrieval and optional grounded generation can be added later without replacing the record/provenance contract.
+
+## ADR-009: Synchronize only accepted processed records and keep session context bounded
+
+**Decision:** Treat the normalizer's `processed_files` manifest as authoritative. Validate the complete import before transactionally updating recipes, category/ingredient indexes, and FTS entries, then remove obsolete derivatives. Preserve the raw snapshots. Keep cited record IDs and literal conversational exclusions under random session tokens, expire inactive context after one hour, and cap sessions at 1,000. Ignore client history for factual grounding.
+
+**Reason:** An invalid newer snapshot must not silently leave its older derivative searchable. Browser-provided text must not become trusted recipe evidence. A small local application needs bounded storage and independent conversations without storing entire question/answer histories.
+
+## ADR-010: Serve the website and API from one local origin
+
+**Decision:** `recipehub serve` exposes the static frontend and `/api/v1/` from loopback, supplying dynamic `/config.js` for API mode. Independent static hosting retains mock mode. CORS is explicit for separate development origins. API responses use JSON errors and no-store caching.
+
+**Reason:** One command runs the complete project and avoids manual browser configuration. The stdlib threaded HTTP server and SQLite require no extra runtime dependencies. This is a local classroom server; a production deployment would need authentication, TLS, and an appropriate application server.

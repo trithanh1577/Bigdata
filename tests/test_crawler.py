@@ -99,6 +99,7 @@ class CrawlerTests(unittest.TestCase):
 
             self.assertEqual([record[0] for record in records], ["1", "2"])
             self.assertEqual(listing_calls[1]["cmcontinue"], "next-page")
+            self.assertEqual(listing_calls[0]["cmnamespace"], 102)
             self.assertIsNone(next_cursor["cmcontinue"])
 
     def test_wikibooks_rejects_placeholder_contact_in_user_agent(self) -> None:
@@ -165,6 +166,15 @@ class CrawlerTests(unittest.TestCase):
                 with patch("recipehub.recipe_crawler.time.sleep"):
                     self.assertEqual(crawler._get_json("https://api.test/recipes"), {"ok": True})
             self.assertEqual(get.call_count, 2)
+
+    def test_api_errors_are_reported_instead_of_silent_empty_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            crawler = RecipeCrawler(Settings(raw_dir=root / "raw", processed_dir=root / "processed", state_dir=root / "state", delay_seconds=0))
+            response = Mock(status_code=200, headers={})
+            response.json.return_value = {"error": {"code": "badcontinue", "info": "Invalid cursor"}}
+            with patch.object(crawler.session, "get", return_value=response), self.assertRaisesRegex(ValueError, "Provider API error"):
+                crawler._get_json("https://wiki.test/api.php")
 
 
 if __name__ == "__main__":

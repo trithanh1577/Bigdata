@@ -1,4 +1,5 @@
-// Use "api" after Person 3 implements docs/frontend-api-contract.md.
+// Static standalone preview uses mocks. The Python "serve" command overrides
+// this response with same-origin API configuration automatically.
 // No private API keys belong in browser configuration.
 window.RECIPEHUB_CONFIG = {
   mode: "mock",

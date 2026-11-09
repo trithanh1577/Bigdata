@@ -1,6 +1,6 @@
 # Website API contract — Person 3 ↔ Person 4
 
-**Status:** proposed integration contract. No HTTP backend exists in this repository yet. Person 3 should review these endpoints before connecting the website to live data. The website currently implements them through a mock adapter; this document does not claim that they are deployed.
+**Status:** implemented by `recipehub/server.py`, `recipehub/knowledge_base.py`, and `recipehub/conversation.py`, and integrated with the website. Run `python -m recipehub.cli serve` for the connected application at `http://127.0.0.1:8000`. The standalone static preview still uses the mock adapter by default.
 
 **Website owner:** Nguyễn Trần Hoàng Nhân — `2474802010272`.
 
@@ -18,7 +18,7 @@ window.RECIPEHUB_CONFIG = {
 };
 ```
 
-Use `mode: "mock"` for independent UI development. API mode never silently falls back to demo data. The frontend is static; its configuration is public and must not contain secrets. The current baseline has no authentication, browser storage, database, or API proxy. Configure backend CORS to allow the development origin `http://127.0.0.1:5173` and handle JSON POST preflights. For an HTTPS deployment, use an HTTPS API URL or a same-origin reverse proxy.
+The integrated server overrides `/config.js` with same-origin API configuration automatically. Use `mode: "mock"` for independent UI development. API mode never silently falls back to demo data. Browser configuration is public and must not contain secrets. The backend uses SQLite with FTS5, and supports JSON POST preflights for `http://127.0.0.1:5173` and `http://localhost:5173`. Supply repeated `serve --allow-origin` options to replace these cross-origin defaults. The baseline has no production authentication or TLS. For an HTTPS deployment, use an HTTPS API URL or a same-origin reverse proxy.
 
 All successful responses use `application/json`. Use appropriate HTTP status codes (`400`, `404`, `429`, `500`, `503`) for failures. The UI exposes HTTP status, timeouts, connection failures, and invalid response shapes with retry paths; it does not render server error HTML. Record text is rendered as plain text, including conversation answers; source links accept only absolute HTTP(S) URLs.
 
@@ -40,10 +40,11 @@ These values illustrate the synthetic demo only. Real facets depend on normalize
 
 | Parameter | Meaning |
 | --- | --- |
-| `q` | Optional search string. The mock requires every whitespace-separated term to occur in the combined title, description, region, categories, or ingredient names, ignoring case and accents. Person 3 may improve ranking with full-text search. |
+| `q` | Optional search string. The backend requires all sanitized Unicode token prefixes to match its SQLite FTS5 index of title, description, region, categories, and ingredient names. User input cannot execute FTS operators. The mock uses substring matching of whitespace-separated terms. Both ignore case and accents. |
 | `country` | Exact `country_or_region` facet value. |
 | `category` | Exact member of `categories`. |
 | `difficulty` | Exact source-declared difficulty. |
+| `ingredient` | Optional backend-only exact normalized ingredient name. |
 | `max_minutes` | Inclusive total-time ceiling. Exclude records with `total_minutes: null` when this filter is active. Do not derive total time from other fields. |
 | `exclude_ingredients` | Repeated query parameter, one term per occurrence. Exclude a record when any term occurs in ingredient `name`, ingredient `original_text`, or source-declared `allergens`, ignoring case and accents. |
 | `require_allergens` | When `true`, only return records with a nonempty source-declared `allergens` list. This does not imply complete allergen coverage or dietary safety. |
@@ -112,17 +113,21 @@ Example response shape (placeholder values, not actual recipe data):
 }
 ```
 
-The client sends at most twelve prior messages, excluding the current message, and carries the returned session ID into the next request. It keeps this state in tab memory; **New conversation** clears it locally and starts with a null session ID. It does not request deletion of backend history. Person 3 owns session isolation, expiration, retention, and retrieval context. Do not trust client-provided history as an authoritative source.
+The client sends at most twelve prior messages, excluding the current message, and carries the returned session ID into the next request. The backend accepts that history for compatibility but ignores it for grounding. It retains only the last cited record IDs and conversational exclusion terms under a random 256-bit bearer token in SQLite. Full message history is not persisted. Sessions expire after one hour without activity and are removed lazily on the next chat request; the store is capped at 1,000 sessions. An unknown/expired token returns `404`. **New conversation** clears browser memory and starts with a null token; old backend context expires independently. Do not share session tokens.
 
 Apply current country/category/time/difficulty/exclusion/allergen preferences to retrieval. Treat the conversational message as the new query; the previous search `q` is context, not a mandatory second query. Re-evaluate preferences on every turn, including follow-ups, so earlier records cannot bypass newly applied exclusions. Citation IDs must resolve through the detail endpoint. The UI opens those records and shows provider links when available.
 
-The backend may use SQL/full-text retrieval with or without an LLM. Answer recipe questions only from retrieved records and cite them. Do not invent missing ingredients, timings, substitutions, allergens, or nutrition. For unsupported requests, explain the limitation and return an empty citation list. The UI labels uncited API responses. Dietary exclusion is assistance with incomplete data, never a medical safety guarantee. The mock only recognizes a limited set of English recipe questions and deliberately declines dietary/safety/substitution requests.
+The implemented backend uses SQL/FTS retrieval and source extraction, without an LLM. It supports English discovery by region, ingredient, title, and an explicit minute limit, followed by questions about ingredients, steps, sources, time, difficulty, allergens, nutrition, substitutions, tools, and tips. Unsupported requests explain the limit. Missing facts are labeled rather than invented; record-based answers include citations even when explaining a field's absence. Text following `without`, `avoid`, `exclude`, or `allergic to` is treated as literal comma/and/or-separated avoidance terms. These extra exclusions persist until a new conversation. No alias or hidden-ingredient coverage is guaranteed. Dietary exclusion never certifies medical safety. The standalone mock has a smaller set of English patterns and declines dietary/safety/substitution requests.
+
+## Health and errors
+
+`GET /health` returns `status`, indexed recipe count, source/region counts, search engine, `answer_mode: "source-extractive"`, and `session_ttl_seconds: 3600`. An empty collection is a valid healthy state. Search page size is capped at 100. Chat messages are limited to 1,000 characters, request bodies to 32 KiB, and exclusions to 20 terms of at most 100 characters each. Error bodies use `{"error":{"status":400,"message":"Reason"}}`; the frontend renders the reason as plain text. API and configuration responses are not cached.
 
 ## Integration checklist
 
 1. Load normalized recipe records into Person 3's database without merging provider versions.
-2. Implement the four endpoint shapes and CORS behavior above.
+2. Start the implemented service with `python -m recipehub.cli serve`.
 3. Test unknown fields, empty results, missing records, and service errors against the UI.
-4. Change `frontend/config.js` to API mode and restart/reload the website.
+4. Use the integrated same-origin website, or configure a separately served frontend to use API mode.
 5. Check a search, multiple ingredient exclusions, pagination, a recipe's original wording and source links, and a cited multi-turn conversation.
 6. Keep test fixtures clearly separate from crawled records; do not report the eight synthetic records as collected dataset coverage.

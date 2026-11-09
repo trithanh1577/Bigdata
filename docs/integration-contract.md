@@ -89,4 +89,8 @@ The currently configured providers do not offer complete structured allergen or 
 
 ## Website implementation (Person 4)
 
-The English website is implemented in `frontend/`. Its default mock adapter uses explicitly synthetic records matching the schema above; these are not collected recipes. A configurable HTTP adapter is ready for Person 3's backend. The proposed endpoint contract is documented in [frontend-api-contract.md](frontend-api-contract.md), and the component handoff is in [person-4-delivery.md](person-4-delivery.md). Backend/database implementation and live integration remain Person 3's work.
+The English website in `frontend/` is integrated with Person 3's SQLite/FTS5 backend and source-extractive answer service. Run `python -m recipehub.cli serve` for the complete application; the server supplies same-origin API configuration. The standalone static preview retains synthetic mock records for offline development. See [frontend-api-contract.md](frontend-api-contract.md), [person-3-delivery.md](person-3-delivery.md), and [person-4-delivery.md](person-4-delivery.md).
+
+## Authoritative processed manifest
+
+Normalization now writes `processed_files` in `quality_report.json`, listing accepted recipe files relative to `data/processed/`. It also reports source counts, invalid records, missing fields, and duplicate candidates. Latest snapshots are selected by timezone-aware timestamp comparison. Invalid latest versions are excluded from this manifest even when an older processed file remains on disk. Database indexing validates every manifest entry before a transaction and synchronizes exactly those records, removing stale database/FTS derivatives without deleting raw history. If a processed dataset has no manifest field, indexing uses all `recipes/*/*.json` files. Do not edit generated processed files without updating their authoritative manifest.
