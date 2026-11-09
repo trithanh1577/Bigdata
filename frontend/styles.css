@@ -117,6 +117,19 @@ nav a {
   text-decoration:underline;
   text-underline-offset:4px
 }
+.language-button {
+  border:1px solid var(--line);
+  border-radius:999px;
+  background:var(--white);
+  color:var(--green);
+  padding:8px 12px;
+  font-size:12px;
+  font-weight:700;
+  white-space:nowrap
+}
+.language-button:hover {
+  background:var(--soft)
+}
 .mode-badge {
   border:1px solid #d2d7c8;
   background:#eef0e4;
@@ -576,6 +589,16 @@ h2 {
   display:grid;
   grid-template-columns:repeat(3,minmax(0,1fr));
   gap:22px 18px
+}
+.translation-notice {
+  grid-column:1/-1;
+  margin:0;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:5px;
+  background:var(--white);
+  color:var(--muted);
+  font-size:12px
 }
 .recipe-card {
   background:var(--white);
@@ -1137,11 +1160,16 @@ dialog::backdrop {
   .site-header nav {
     order:3;
     width:100%;
-    justify-content:space-between;
+    justify-content:flex-start;
+    flex-wrap:wrap;
     font-size:11px;
-    gap:15px
+    gap:6px 13px
   }
   .site-header nav .text-button {
+    font-size:11px
+  }
+  .language-button {
+    padding:6px 9px;
     font-size:11px
   }
   .mode-badge {

@@ -21,6 +21,43 @@ def envelope(source_id: str, payload: dict[str, object]) -> dict[str, object]:
 
 
 class NormalizeTests(unittest.TestCase):
+    def test_schema_org_recipe_from_any_source_id_normalizes_to_shared_record(self) -> None:
+        raw = envelope("cooking-site", {
+            "html": "<html>original page</html>",
+            "json_ld": {
+                "@context": "https://schema.org",
+                "@type": "Recipe",
+                "@id": "https://recipes.example/pasta#recipe",
+                "name": "Tomato pasta",
+                "recipeCuisine": "Italian",
+                "description": "A simple pasta recipe.",
+                "recipeIngredient": ["2 cups pasta", "1 tomato"],
+                "recipeInstructions": [
+                    {"@type": "HowToStep", "text": "Boil the pasta."},
+                    {"@type": "HowToStep", "text": "Add tomato."},
+                ],
+                "prepTime": "PT10M",
+                "cookTime": "PT15M",
+                "totalTime": "PT25M",
+                "recipeYield": "2 servings",
+                "recipeCategory": "Main course",
+                "image": {"url": "https://recipes.example/pasta.jpg"},
+            },
+        })
+        raw["source_type"] = "schema_org_recipe"
+        raw["source_name"] = "Example cooking website"
+
+        record = normalize_raw_envelope(raw)
+
+        self.assertEqual(record.title, "Tomato pasta")
+        self.assertEqual(record.country_or_region, "Italian")
+        self.assertEqual([item.name for item in record.ingredients], ["pasta", "tomato"])
+        self.assertEqual(record.instructions, ["Boil the pasta.", "Add tomato."])
+        self.assertEqual(record.total_minutes, 25)
+        self.assertEqual(record.servings, "2 servings")
+        self.assertEqual(record.image_url, "https://recipes.example/pasta.jpg")
+        self.assertEqual(record.source_name, "Example cooking website")
+
     def test_themealdb_quantity_and_provenance(self) -> None:
         record = normalize_raw_envelope(envelope("themealdb", {
             "strMeal": "Demo soup",

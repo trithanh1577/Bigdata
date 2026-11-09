@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 
 from recipehub.config import Settings
 from recipehub.text import stable_id
@@ -66,6 +67,168 @@ class RecipeCrawler:
             return payload
         raise RuntimeError("HTTP retry loop ended unexpectedly")
 
+    def _get_html(self, url: str, max_attempts: int = 4) -> str:
+        for attempt in range(max_attempts):
+            try:
+                response = self.session.get(url, timeout=self.settings.timeout_seconds)
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt == max_attempts - 1:
+                    raise
+                time.sleep(min(30.0, 2**attempt))
+                continue
+
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt == max_attempts - 1:
+                    response.raise_for_status()
+                retry_after = response.headers.get("Retry-After", "")
+                try:
+                    wait = float(retry_after)
+                except ValueError:
+                    try:
+                        wait = max(
+                            1.0,
+                            (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds(),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        wait = 2**attempt
+                time.sleep(min(30.0, max(1.0, wait)))
+                continue
+
+            response.raise_for_status()
+            if len(response.content) > 5_000_000:
+                raise ValueError(f"HTML page is larger than 5 MB: {url}")
+            if response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() not in {
+                "text/html", "application/xhtml+xml", ""
+            }:
+                raise ValueError(f"Expected an HTML page from {url}")
+            time.sleep(self.settings.delay_seconds)
+            return response.text
+        raise RuntimeError("HTTP retry loop ended unexpectedly")
+
+    @staticmethod
+    def _find_schema_org_recipe(raw_html: str) -> dict[str, Any]:
+        def find_recipe(value: Any) -> dict[str, Any] | None:
+            if isinstance(value, list):
+                for item in value:
+                    found = find_recipe(item)
+                    if found:
+                        return found
+            elif isinstance(value, dict):
+                raw_type = value.get("@type", [])
+                types = raw_type if isinstance(raw_type, list) else [raw_type]
+                if any(str(item).rstrip("/").split("/")[-1].casefold() == "recipe" for item in types):
+                    return value
+                for item in value.values():
+                    if isinstance(item, (dict, list)):
+                        found = find_recipe(item)
+                        if found:
+                            return found
+            return None
+
+        soup = BeautifulSoup(raw_html, "html.parser")
+        for script in soup.select('script[type="application/ld+json"]'):
+            try:
+                document = json.loads(script.string or script.get_text())
+            except (json.JSONDecodeError, TypeError):
+                continue
+            recipe = find_recipe(document)
+            if recipe:
+                return recipe
+        raise ValueError("No Schema.org Recipe JSON-LD was found on the configured page")
+
+    def _schema_org_records(
+        self, source: dict[str, object], limit: int, cursor: dict[str, Any] | None = None
+    ) -> tuple[list[RawRecord], dict[str, Any]]:
+        urls = source.get("urls", [])
+        if not isinstance(urls, list) or not urls or any(not isinstance(url, str) for url in urls):
+            raise ValueError("Schema.org recipe sources need a nonempty 'urls' list")
+        pages = [url.strip() for url in urls if url.strip()]
+        if not pages:
+            raise ValueError("Schema.org recipe sources need at least one page URL")
+        start = int((cursor or {}).get("next_index", 0)) % len(pages)
+        selected = [pages[(start + index) % len(pages)] for index in range(min(limit, len(pages)))]
+        records: list[RawRecord] = []
+        for url in selected:
+            parts = urlsplit(url)
+            if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+                raise ValueError(f"Configured recipe URL must be an absolute HTTP(S) URL: {url}")
+            raw_html = self._get_html(url)
+            recipe = self._find_schema_org_recipe(raw_html)
+            source_record_id = str(recipe.get("@id") or recipe.get("url") or url)
+            payload = {"html": raw_html, "json_ld": recipe}
+            records.append((source_record_id, url, payload, {"language": str(source.get("language", "en"))}))
+        return records, {"next_index": (start + len(selected)) % len(pages)}
+
+    def collect_discovered_recipe_pages(self, pages: list[dict[str, str]]) -> int:
+        """Save search-discovered Recipe JSON-LD pages into the raw data lake."""
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        summaries: dict[str, dict[str, Any]] = {}
+        saved = 0
+        for page in pages[:3]:
+            url = str(page.get("url", "")).strip()
+            parts = urlsplit(url)
+            if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+                continue
+            host = parts.hostname.lower().rstrip(".")
+            if host in {"localhost", "127.0.0.1", "::1"} or host.endswith((".local", ".internal", ".test")):
+                continue
+            host_slug = re.sub(r"[^a-z0-9]+", "_", host).strip("_")[:36] or "source"
+            source_id = f"web_{host_slug}_{stable_id(host)[:8]}"
+            source_name = str(page.get("title", "")).strip() or host
+            summary = summaries.setdefault(source_id, {
+                "run_id": run_id, "source_id": source_id, "source_name": source_name,
+                "fetched": 0, "raw_saved": 0, "errors": [],
+            })
+            try:
+                raw_html = self._get_html(url, max_attempts=2)
+                recipe = self._find_schema_org_recipe(raw_html)
+                source_record_id = str(recipe.get("@id") or recipe.get("url") or url)
+                publisher = recipe.get("publisher")
+                if isinstance(publisher, dict):
+                    source_name = str(publisher.get("name") or source_name)
+                elif isinstance(publisher, str) and publisher.strip():
+                    source_name = publisher.strip()
+                collected_at = datetime.now(timezone.utc).isoformat()
+                source_terms_url = str(recipe.get("license") or "")
+                envelope = {
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "source_record_id": source_record_id,
+                    "source_type": "schema_org_recipe",
+                    "source_url": url,
+                    "source_license": "Original website terms apply; reuse terms have not been verified.",
+                    "source_terms_url": source_terms_url,
+                    "attribution": f"Recipe data from {source_name}: {url}",
+                    "language": str(recipe.get("inLanguage", "")),
+                    "collected_at": collected_at,
+                    "payload": {"html": raw_html, "json_ld": recipe},
+                }
+                run_dir = self.settings.raw_dir / source_id / "runs" / run_id
+                records_dir = run_dir / "records"
+                records_dir.mkdir(parents=True, exist_ok=True)
+                raw_path = records_dir / f"{stable_id(source_record_id)}.json"
+                raw_path.write_text(json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8")
+                with self._manifest_file().open("a", encoding="utf-8", newline="\n") as manifest:
+                    manifest.write(json.dumps({
+                        "run_id": run_id, "source_id": source_id, "source_name": source_name,
+                        "source_record_id": source_record_id, "url": url,
+                        "collected_at": collected_at,
+                        "raw_file": raw_path.relative_to(self.settings.project_root).as_posix(),
+                        "discovered_by": "gemini_google_search",
+                    }, ensure_ascii=False) + "\n")
+                summary["source_name"] = source_name
+                summary["fetched"] += 1
+                summary["raw_saved"] += 1
+                saved += 1
+            except (requests.RequestException, ValueError, KeyError, TypeError, OSError) as exc:
+                summary["errors"].append(f"{type(exc).__name__}: {exc}")
+
+        for source_id, summary in summaries.items():
+            run_dir = self.settings.raw_dir / source_id / "runs" / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        return saved
+
     def crawl(self, max_items_per_source: int = 20) -> dict[str, Any]:
         if max_items_per_source < 1:
             raise ValueError("max_items_per_source must be at least 1")
@@ -98,6 +261,10 @@ class RecipeCrawler:
                     records, next_cursor = self._wikibooks_records(
                         source, max_items_per_source, source_cursor
                     )
+                elif source.get("type") == "schema_org_recipe":
+                    records, next_cursor = self._schema_org_records(
+                        source, max_items_per_source, source_cursor
+                    )
                 else:
                     raise ValueError(f"Unknown source type: {source.get('type')}")
 
@@ -108,6 +275,7 @@ class RecipeCrawler:
                         "source_id": source_id,
                         "source_name": str(source["name"]),
                         "source_record_id": source_record_id,
+                        "source_type": str(source.get("type", source_id)),
                         "source_url": source_url,
                         "source_license": str(source.get("license", "Check provider terms")),
                         "source_terms_url": str(source.get("terms_url", "")),

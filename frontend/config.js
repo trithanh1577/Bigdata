@@ -1,7 +1,8 @@
-// Use "api" after Person 3 implements docs/frontend-api-contract.md.
+// Run `python -m recipehub.cli serve` to connect this website to the local knowledge base.
+// Switch to "mock" only when demonstrating the synthetic UI fixtures.
 // No private API keys belong in browser configuration.
 window.RECIPEHUB_CONFIG = {
-  mode: "mock",
-  apiBaseUrl: "http://127.0.0.1:8000/api/v1",
-  timeoutMs: 15000,
+  mode: "api",
+  apiBaseUrl: `${window.location.origin}/api/v1`,
+  timeoutMs: 120000,
 };

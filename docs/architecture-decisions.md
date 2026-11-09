@@ -2,9 +2,9 @@
 
 ## ADR-001: Use explicit source adapters, not arbitrary crawling
 
-**Decision:** Start with TheMealDB's official recipe API and Wikibooks Cookbook's MediaWiki API. Keep source definitions in `config/recipe_sources.json`; do not crawl unrelated pages or scrape TheMealDB's HTML site.
+**Decision:** Keep source definitions in `config/recipe_sources.json`. TheMealDB and Wikibooks Cookbook are examples, not mandatory choices. Support explicitly configured recipe pages and Gemini-discovered pages that publish Schema.org `Recipe` JSON-LD. A different page format needs its own adapter; do not crawl unrelated pages or scrape TheMealDB's HTML site.
 
-**Reason:** The assignment needs multi-source collection. These two sources expose structured endpoints, source IDs, and recipe fields that can be mapped into a common format.
+**Reason:** The assignment lets the operator choose reliable sources. Source adapters preserve IDs and provenance while mapping supported API or Schema.org fields into the common recipe format.
 
 **Source caveats:** TheMealDB's free test key is documented for development/educational use; preserve its required attribution and review its terms before public release. Wikibooks text is generally CC BY-SA 4.0/GFDL, but individual page and media notices can differ. Store source URL, terms/license note, and attribution on every record.
 
@@ -28,22 +28,22 @@
 
 **Reason:** Wrong conversions and invented health/safety claims are worse than explicit missing data. Later components can decide how to present incomplete fields.
 
-## ADR-005: Run collection daily/weekly
+## ADR-005: Run collection on a configurable interval
 
-**Decision:** The local scheduler defaults to daily and supports a configurable day interval.
+**Decision:** The local scheduler defaults to daily and supports intervals in minutes or days. A 30-minute schedule is available with `schedule --minutes 30`.
 
-**Reason:** Recipe sites and APIs do not generally need a 30-minute crawl cadence; the lecturer's example was not a specific recipe requirement. Each API request is delayed; transient network errors, HTTP 429, and HTTP 5xx responses are retried with bounded waits. TheMealDB area cursors and the Wikibooks category continuation token are persisted in `data/state/crawl_cursors.json` so scheduled runs can advance through source results.
+**Reason:** The interval can be selected for the demonstration or source update rate. Each API request is delayed; transient network errors, HTTP 429, and HTTP 5xx responses are retried with bounded waits. TheMealDB area cursors and the Wikibooks category continuation token are persisted in `data/state/crawl_cursors.json` so scheduled runs can advance through source results. The schedule is local and requires the process and computer to remain running.
 
 ## ADR-006: Separate ingestion, backend, and website ownership
 
-**Decision:** Keep Person 1's source ingestion/raw lake and Person 2's normalization/quality report separate from Persons 3–4's components. Person 4's website is now implemented in `frontend/` with a mock adapter and configurable HTTP adapter. Relational knowledge base, full-text/vector retrieval, and the answer API remain Person 3's implementation work.
+**Decision:** Keep Person 1's source ingestion/raw lake and Person 2's normalization/quality report separate from Persons 3–4's components. Person 3's local SQLite/FTS knowledge base and HTTP API are implemented in `recipehub/knowledge_base.py` and `recipehub/api.py`. Person 4's website is implemented in `frontend/` and consumes the API by default.
 
 **Reason:** Separating component ownership allows the crawler/normalizer pair and the backend/frontend pair to develop concurrently against the schema and integration contract.
 
 ## ADR-007: Build a dependency-free static website with interchangeable data adapters
 
-**Decision:** Use HTML, CSS, and JavaScript modules for the English website. Provide explicit mock/API modes, a synthetic fixture collection, and a proposed frontend API contract. Show missing source fields rather than inferring them, and preserve separate provider records in recipe details and citations.
+**Decision:** Use HTML, CSS, and JavaScript modules for the English/Vietnamese website. Provide explicit mock/API modes, a synthetic fixture collection, and a documented frontend API contract. Show missing source fields rather than inferring them, and preserve separate provider records in recipe details and citations.
 
 **Reason:** Person 4 can deliver and demonstrate the interface before Person 3's backend exists. A static website works with the repository's existing Python tooling and requires no frontend build service. Separating the HTTP adapter keeps future integration changes out of the rendering layer.
 
-**Trade-off:** The local companion is deterministic demo retrieval, not an LLM. Dietary exclusions are text matches with incomplete source data. Live retrieval, session management, answer grounding, and production authentication belong to the backend. No live integration is claimed until that service is available.
+**Trade-off:** The backend uses deterministic retrieval by default and can optionally call Gemini through Google's native `generateContent` API using a server-side `.env` key. It can translate English/Vietnamese questions and recipe content to the selected interface language. Raw snapshots, normalized records, crawl state, and the SQLite knowledge base are stored on disk; chat sessions remain in memory for the local process. Dietary exclusions are text matches with incomplete source data. The proof of concept has no authentication or public hosting.

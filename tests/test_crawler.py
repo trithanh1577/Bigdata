@@ -101,6 +101,37 @@ class CrawlerTests(unittest.TestCase):
             self.assertEqual(listing_calls[1]["cmcontinue"], "next-page")
             self.assertIsNone(next_cursor["cmcontinue"])
 
+    def test_schema_org_adapter_reads_recipe_pages_and_advances_url_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            settings = Settings(
+                project_root=root,
+                sources_file=root / "sources.json",
+                raw_dir=root / "raw",
+                processed_dir=root / "processed",
+                state_dir=root / "state",
+                delay_seconds=0,
+            )
+            crawler = RecipeCrawler(settings)
+            source = {
+                "id": "sample-site",
+                "type": "schema_org_recipe",
+                "urls": ["https://recipes.test/one", "https://recipes.test/two"],
+                "language": "en",
+            }
+            html = '<script type="application/ld+json">{"@type":"Recipe","name":"Test recipe"}</script>'
+            with patch.object(crawler, "_get_html", return_value=html) as fetch:
+                records, cursor = crawler._schema_org_records(source, 1)
+                next_records, next_cursor = crawler._schema_org_records(source, 1, cursor)
+
+            self.assertEqual(fetch.call_args_list[0].args[0], "https://recipes.test/one")
+            self.assertEqual(fetch.call_args_list[1].args[0], "https://recipes.test/two")
+            self.assertEqual(records[0][2]["html"], html)
+            self.assertEqual(records[0][2]["json_ld"]["name"], "Test recipe")
+            self.assertEqual(cursor["next_index"], 1)
+            self.assertEqual(next_records[0][1], "https://recipes.test/two")
+            self.assertEqual(next_cursor["next_index"], 0)
+
     def test_wikibooks_rejects_placeholder_contact_in_user_agent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -19,8 +19,9 @@ export function hasMinutes(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-export function timeLabel(value) {
-  return hasMinutes(value) ? `${value} min` : "Time not supplied";
+export function timeLabel(value, language = "en") {
+  if (!hasMinutes(value)) return language === "vi" ? "Chưa có thời gian" : "Time not supplied";
+  return language === "vi" ? `${value} phút` : `${value} min`;
 }
 
 export function matchesPreferences(recipe, filters = {}) {
@@ -45,7 +46,7 @@ export function filterRecipes(recipes, filters = {}) {
       const delta = (hasMinutes(a.total_minutes) ? a.total_minutes : Infinity) - (hasMinutes(b.total_minutes) ? b.total_minutes : Infinity);
       if (delta && !Number.isNaN(delta)) return delta;
     }
-    return a.title.localeCompare(b.title, "en") || a.record_id.localeCompare(b.record_id);
+    return a.title.localeCompare(b.title, filters.locale === "vi" ? "vi" : "en") || a.record_id.localeCompare(b.record_id);
   });
 }
 
@@ -65,40 +66,41 @@ function citation(recipe) {
 }
 
 // Deterministic mock retrieval, never a substitute for Person 3's answer service.
-export function mockAnswer(recipes, message, filters = {}, previousIds = []) {
+export function mockAnswer(recipes, message, filters = {}, previousIds = [], language = "en") {
   const question = normalized(message);
+  const vi = language === "vi";
   const eligible = filterRecipes(recipes, { ...filters, q: "" });
   const direct = eligible.find(recipe => question.includes(normalized(recipe.title)));
-  const followUp = /\b(it|its|that|those|them|this|these)\b/.test(question) || /^(what are the ingredients|how do i (make|cook)|show (me )?(the )?steps)/.test(question);
-  const ingredientQuestion = /ingredient|what goes into/.test(question);
-  const methodQuestion = /step|instruction|how (do|to)|method/.test(question);
+  const followUp = /\b(it|its|that|those|them|this|these|no|chung)\b/.test(question) || /^(what are the ingredients|how do i (make|cook)|show (me )?(the )?steps|nguyen lieu|cach nau|cach lam)/.test(question);
+  const ingredientQuestion = /ingredient|what goes into|nguyen lieu|thanh phan/.test(question);
+  const methodQuestion = /step|instruction|how (do|to)|method|cach nau|cach lam|che bien|huong dan/.test(question);
   const contextual = direct ? [direct] : followUp ? eligible.filter(recipe => previousIds.includes(recipe.record_id)) : [];
   if (contextual.length && (ingredientQuestion || methodQuestion)) {
     const selected = contextual[0];
     const text = methodQuestion ? selected.instructions.map((step, i) => `${i + 1}. ${step}`).join("\n") : selected.ingredients.map(item => `• ${item.original_text}`).join("\n");
-    return { answer: `${selected.title}\n\n${text}\n\nSynthetic demo record. Allergen data may be incomplete.`, citations: [citation(selected)], session_id: "local-demo" };
+    return { answer: vi ? `${selected.title}\n\n${methodQuestion ? "Cách chế biến" : "Nguyên liệu"}:\n${text}\n\nĐây là dữ liệu minh họa; thông tin dị ứng có thể chưa đầy đủ.` : `${selected.title}\n\n${text}\n\nSynthetic demo record. Allergen data may be incomplete.`, citations: [citation(selected)], session_id: "local-demo" };
   }
   if (/allerg|safe|nutrition|calori|substitut|instead|replace|protein|gluten.free|vegan|vegetarian|halal|kosher|dairy.free|nut.free/.test(question)) {
-    return { answer: "The demo cannot verify dietary suitability, medical safety, nutrition, or ingredient substitutions. Use Ingredients to avoid to exclude text matches, then check the full source record. Missing allergen information means unknown. The demo does not invent missing facts.", citations: [], session_id: "local-demo" };
+    return { answer: vi ? "Bản minh họa không thể xác nhận chế độ ăn, độ an toàn y tế, dinh dưỡng hoặc nguyên liệu thay thế. Hãy nhập nguyên liệu cần tránh vào bộ lọc rồi kiểm tra bản ghi nguồn. Thiếu thông tin dị ứng nghĩa là chưa rõ; hệ thống không tự bịa dữ liệu." : "The demo cannot verify dietary suitability, medical safety, nutrition, or ingredient substitutions. Use Ingredients to avoid to exclude text matches, then check the full source record. Missing allergen information means unknown. The demo does not invent missing facts.", citations: [], session_id: "local-demo" };
   }
   if (/\b(without|avoid|exclude|excluding|no)\b/.test(question)) {
-    return { answer: "For ingredient exclusions, enter comma-separated terms in Ingredients to avoid above and apply preferences first. The demo does not interpret exclusion requests in free text. Applied exclusions will also constrain the next recipe lookup.", citations: [], session_id: "local-demo" };
+    return { answer: vi ? "Để loại trừ nguyên liệu, nhập các từ cách nhau bằng dấu phẩy trong mục Nguyên liệu cần tránh rồi áp dụng lựa chọn. Bản minh họa chưa tự hiểu yêu cầu loại trừ trong câu hỏi; bộ lọc đã chọn vẫn áp dụng cho lần tra cứu tiếp theo." : "For ingredient exclusions, enter comma-separated terms in Ingredients to avoid above and apply preferences first. The demo does not interpret exclusion requests in free text. Applied exclusions will also constrain the next recipe lookup.", citations: [], session_id: "local-demo" };
   }
-  const maxTime = question.match(/(?:under|within|in|less than|up to)\s+(\d+)\s*(?:min|minute)/);
+  const maxTime = question.match(/(?:under|within|in|less than|up to|duoi|trong|khong qua)\s+(\d+)\s*(?:min|minute|phut)/);
   let candidates = maxTime ? eligible.filter(recipe => hasMinutes(recipe.total_minutes) && recipe.total_minutes <= Number(maxTime[1])) : eligible;
   const requestedRegion = buildFacets(recipes).countries.find(region => question.includes(normalized(region)));
   const requestedIngredients = [...new Set(recipes.flatMap(recipe => recipe.ingredients.map(item => normalized(item.name))))].filter(name => question.includes(name));
   if (direct) candidates = candidates.filter(recipe => recipe.record_id === direct.record_id);
   if (requestedRegion) candidates = candidates.filter(recipe => recipe.country_or_region === requestedRegion);
   if (requestedIngredients.length) candidates = candidates.filter(recipe => requestedIngredients.every(name => recipe.ingredients.some(item => normalized(item.name).includes(name))));
-  const isDiscovery = /\b(recipe|dish|find|suggest|show|cook|meal|recommend|something)\b/.test(question) || requestedRegion || requestedIngredients.length || maxTime || direct;
+  const isDiscovery = /\b(recipe|dish|find|suggest|show|cook|meal|recommend|something|mon|mon an|tim|goi y|nau)\b/.test(question) || requestedRegion || requestedIngredients.length || maxTime || direct;
   if (!isDiscovery || ((ingredientQuestion || methodQuestion) && !contextual.length && !direct)) {
-    return { answer: "I can look up the demo recipes by dish name, region, ingredient, or cooking time. Try “Find recipes with tomato” or open a recipe and ask about its ingredients or steps. I do not have enough recipe context for that question yet.", citations: [], session_id: "local-demo" };
+    return { answer: vi ? "Mình có thể tra cứu món mẫu theo tên món, vùng miền, nguyên liệu hoặc thời gian nấu. Hãy thử ‘Tìm món có cà chua’ hoặc mở một công thức rồi hỏi về nguyên liệu hay cách làm. Hiện chưa đủ ngữ cảnh để trả lời câu này." : "I can look up the demo recipes by dish name, region, ingredient, or cooking time. Try “Find recipes with tomato” or open a recipe and ask about its ingredients or steps. I do not have enough recipe context for that question yet.", citations: [], session_id: "local-demo" };
   }
   const selected = candidates.slice(0, 3);
-  if (!selected.length) return { answer: "I couldn't find a demo recipe matching that question and your applied preferences. Try a different ingredient or adjust the filters above.", citations: [], session_id: "local-demo" };
+  if (!selected.length) return { answer: vi ? "Không tìm thấy món mẫu phù hợp với câu hỏi và các lựa chọn đang áp dụng. Hãy thử nguyên liệu khác hoặc điều chỉnh bộ lọc." : "I couldn't find a demo recipe matching that question and your applied preferences. Try a different ingredient or adjust the filters above.", citations: [], session_id: "local-demo" };
   return {
-    answer: `Here ${selected.length === 1 ? "is a demo recipe" : "are a few demo recipes"} matching your question and applied preferences:\n\n${selected.map(recipe => `• ${recipe.title} — ${recipe.country_or_region}; ${timeLabel(recipe.total_minutes)}.`).join("\n")}\n\nOpen a cited record for the full recipe, or ask “What are its ingredients?” about the first result. These are synthetic examples.`,
+    answer: vi ? `Một số món mẫu phù hợp với câu hỏi và lựa chọn của bạn:\n\n${selected.map(recipe => `• ${recipe.title} — ${recipe.country_or_region}; ${timeLabel(recipe.total_minutes, language)}.`).join("\n")}\n\nMở trích dẫn để xem công thức đầy đủ, hoặc hỏi ‘Món này có nguyên liệu gì?’ Đây là dữ liệu minh họa.` : `Here ${selected.length === 1 ? "is a demo recipe" : "are a few demo recipes"} matching your question and applied preferences:\n\n${selected.map(recipe => `• ${recipe.title} — ${recipe.country_or_region}; ${timeLabel(recipe.total_minutes, language)}.`).join("\n")}\n\nOpen a cited record for the full recipe, or ask “What are its ingredients?” about the first result. These are synthetic examples.`,
     citations: selected.map(citation), session_id: "local-demo",
   };
 }

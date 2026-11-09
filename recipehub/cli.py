@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from recipehub.config import Settings
+from recipehub.knowledge_base import KnowledgeBase
 from recipehub.normalize import NormalizationPipeline
 from recipehub.recipe_crawler import RecipeCrawler
 
@@ -35,18 +36,25 @@ def _stats(settings: Settings) -> dict[str, Any]:
     return {
         "raw_records": len(list(settings.raw_dir.glob("*/runs/*/records/*.json"))),
         "processed_records": len(processed_files),
+        "indexed_records": KnowledgeBase(settings).count(),
         "countries_or_regions": countries,
     }
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Global Culinary Knowledge Base — Persons 1 and 2")
+    parser = argparse.ArgumentParser(description="Global Culinary Knowledge Base")
     commands = parser.add_subparsers(dest="command", required=True)
     crawl = commands.add_parser("crawl", help="Collect source records into the raw data lake")
     crawl.add_argument("--max-items", type=_positive_int, default=20, help="Maximum recipes per source per run")
     normalize = commands.add_parser("normalize", help="Normalize raw source records into the processed data lake")
-    schedule = commands.add_parser("schedule", help="Crawl and normalize on a daily/weekly interval")
-    schedule.add_argument("--days", type=_positive_int, default=1, help="Days between runs; default is once per day")
+    commands.add_parser("build", help="Build or refresh the SQLite recipe knowledge base from processed records")
+    serve = commands.add_parser("serve", help="Run the Recipe Atlas website and HTTP API")
+    serve.add_argument("--host", default="127.0.0.1", help="Bind address; default is local-only")
+    serve.add_argument("--port", type=_positive_int, default=8000, help="HTTP port; default is 8000")
+    schedule = commands.add_parser("schedule", help="Crawl, normalize, and rebuild on a repeating interval")
+    interval = schedule.add_mutually_exclusive_group()
+    interval.add_argument("--days", type=_positive_int, help="Days between runs; default is once per day")
+    interval.add_argument("--minutes", type=_positive_int, help="Minutes between runs, for example --minutes 30")
     schedule.add_argument("--max-items", type=_positive_int, default=20, help="Maximum recipes per source per run")
     commands.add_parser("stats", help="Show raw/processed counts and country coverage")
     return parser
@@ -69,17 +77,30 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if result["invalid"]:
             raise SystemExit(1)
+    elif args.command == "build":
+        result = KnowledgeBase(settings).rebuild()
+        print(json.dumps({**result, "database": str(settings.database_file)}, ensure_ascii=False, indent=2))
+    elif args.command == "serve":
+        if args.port > 65535:
+            raise SystemExit("port must be between 1 and 65535")
+        from recipehub.api import serve as serve_api
+        serve_api(settings, host=args.host, port=args.port)
     elif args.command == "stats":
         print(json.dumps(_stats(settings), ensure_ascii=False, indent=2))
     elif args.command == "schedule":
-        interval_days = args.days
-        print(f"Scheduler: crawl + normalize every {interval_days} day(s). Press Ctrl+C to stop.")
+        interval_seconds = args.minutes * 60 if args.minutes else (args.days or 1) * 24 * 60 * 60
+        interval_label = f"{args.minutes} minute(s)" if args.minutes else f"{args.days or 1} day(s)"
+        print(f"Scheduler: crawl + normalize + build every {interval_label}, starting now. Press Ctrl+C to stop.")
         try:
             while True:
+                run_started = time.monotonic()
                 crawl_result = RecipeCrawler(settings).crawl(args.max_items)
                 normalize_result = NormalizationPipeline(settings).run()
-                print(json.dumps({"crawl": crawl_result, "normalize": normalize_result}, ensure_ascii=False))
-                time.sleep(interval_days * 24 * 60 * 60)
+                build_result = KnowledgeBase(settings).rebuild()
+                print(json.dumps({"crawl": crawl_result, "normalize": normalize_result, "knowledge_base": build_result}, ensure_ascii=False))
+                remaining = interval_seconds - (time.monotonic() - run_started)
+                if remaining > 0:
+                    time.sleep(remaining)
         except KeyboardInterrupt:
             print("Scheduler stopped.")
 

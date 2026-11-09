@@ -1,186 +1,224 @@
-# Bigdata — Global Culinary Knowledge Base
+# Global Culinary Knowledge Base
 
-A multi-region culinary knowledge project: collect recipes from Internet sources, retain raw API snapshots, normalize records into a shared schema, and expose them through a searchable website and source-grounded conversation interface.
+Dự án thử nghiệm cục bộ xây dựng kho tri thức ẩm thực: thu thập công thức từ các nguồn công khai, giữ lại dữ liệu gốc, chuẩn hóa thành bản ghi thống nhất, lập chỉ mục trong SQLite và cung cấp website có trích dẫn nguồn.
 
-**Implemented:** Persons 1–2's crawler, local data lake, and normalization pipeline; Person 4's English website with synthetic demo responses and a configurable HTTP adapter. **Pending:** Person 3's database, search/answer API, and live website integration. The demo is not the collected dataset.
+Giao diện website hỗ trợ tiếng Việt và tiếng Anh; lựa chọn được lưu trong trình duyệt. Gemini có thể xử lý câu hỏi bằng một trong hai ngôn ngữ, trả lời theo ngôn ngữ giao diện và dịch nội dung công thức khi hiển thị. Tên nhà cung cấp, liên kết, giấy phép và thông tin ghi công được giữ theo nguồn. Khi chưa cấu hình Gemini, website vẫn tìm kiếm và trả lời cơ bản từ dữ liệu hiện có; nội dung công thức giữ ngôn ngữ nguồn.
 
-## Run the website — Person 4
+**Trợ lý nhà bếp** tra cơ sở tri thức SQLite trước. Nếu không tìm thấy công thức phù hợp, Gemini có thể chuyển cụm tìm kiếm sang tiếng Anh rồi tìm trên web; crawler chỉ nhận trang công thức có Schema.org `Recipe`, lưu bản gốc, chuẩn hóa và thêm vào SQLite. Trợ lý trả lời dựa trên bản ghi đó kèm trích dẫn, và giữ ngữ cảnh cho câu hỏi tiếp theo trong cùng phiên. Với dị ứng, hệ thống chỉ nêu cách thay thế nếu nguồn ghi rõ hoặc gợi ý công thức khác dựa trên thành phần đã thu thập; hệ thống không xác nhận món ăn an toàn và không tự bịa nguyên liệu thay thế.
 
-From the repository root, using Python 3.11 or later:
+Dự án không bắt buộc dùng Wikibooks. Có thể chọn API hoặc website công thức phù hợp. Bộ thu thập hỗ trợ TheMealDB, Wikibooks Cookbook và trang có dữ liệu JSON-LD `Recipe` theo Schema.org. Có thể thêm URL trang món ăn mới trong `config/recipe_sources.json`; trang không có cấu trúc này cần bộ phân tích riêng. Khi người dùng hỏi món chưa có trong kho, Gemini có thể tìm trên web, tải tối đa ba trang công thức có cấu trúc phù hợp, lưu bản gốc vào data lake, chuẩn hóa rồi cập nhật chỉ mục trước khi trả lời. Website cho phép tìm công thức, lọc nguyên liệu cần tránh, xem nguồn gốc và hỏi đáp dựa trên bản ghi có trích dẫn.
 
-```powershell
-python -m http.server 5173 --bind 127.0.0.1 --directory frontend
-```
+**Phạm vi hiện tại:** quy trình thu thập và chuẩn hóa dữ liệu (thành viên 1–2), cơ sở tri thức SQLite và HTTP API (thành viên 3), website tích hợp API (thành viên 4). Hỏi đáp cơ bản mặc định truy xuất dữ liệu theo quy tắc, không cần API mô hình AI. Có thể cấu hình Gemini để hiểu câu hỏi linh hoạt hơn, tìm món còn thiếu và dịch nội dung công thức; khóa API chỉ được lưu trong `.env` phía máy chủ, không đưa vào mã frontend hay gửi tới trình duyệt. Câu hỏi có thể nhập bằng tiếng Anh hoặc tiếng Việt; câu trả lời và nội dung bộ sưu tập theo ngôn ngữ đang chọn trên giao diện.
 
-Open **http://127.0.0.1:5173**. Keep the terminal open; press `Ctrl+C` to stop. No npm installation, frontend build, API key, crawler run, or backend is needed for demo mode. Serve the files over HTTP rather than opening `index.html` directly.
+## Công nghệ sử dụng
 
-The website, **Recipe Atlas**, includes:
+- Python 3.11 trở lên: thu thập, chuẩn hóa, lập chỉ mục và chạy máy chủ HTTP.
+- SQLite và FTS5: lưu cơ sở tri thức cục bộ và tìm kiếm toàn văn; được hỗ trợ qua thư viện chuẩn của Python.
+- `requests` và Beautiful Soup: gọi API nguồn và phân tích nội dung.
+- HTML, CSS và JavaScript trên trình duyệt: xây dựng website.
+- GitHub Actions: chạy các bước kiểm tra Python và giao diện website.
 
-- Search by recipe name, ingredient, region, description, or category.
-- Country/region, category, total-time, and difficulty filters; title/time sorting; pagination and reset controls.
-- Comma-separated ingredient avoidance and an option to require source-declared allergen information.
-- Recipe details with original ingredient wording, instructions, source attribution, license/terms links, and collection/update times when available.
-- A conversation panel with clickable record citations, follow-up context, and a new-conversation control.
-- Responsive layouts, labeled controls, keyboard focus indicators, native detail dialogs, empty/error/loading states, and retry controls.
+## Cách chạy dự án trên Windows bằng PowerShell
 
-The default collection contains **eight synthetic teaching records across five regions**. All demo content is labeled; illustrations are decorative. The demo companion performs local deterministic retrieval rather than calling an AI model. Missing fields remain unknown, and ingredient matching does not guarantee dietary safety.
+Mở cửa sổ PowerShell trong VS Code tại thư mục gốc chứa mã nguồn. Máy cần cài Python 3.11 trở lên và có kết nối Internet.
 
-To connect Person 3's backend, review [the proposed API contract](docs/frontend-api-contract.md), then change `mode` to `"api"` and set `apiBaseUrl` in [`frontend/config.js`](frontend/config.js). No backend is currently provided. API mode shows errors when the service is unavailable and never silently substitutes demo records.
+### 1. Tạo môi trường và cài thư viện
 
-See [Person 4's delivery report and demonstration guide](docs/person-4-delivery.md) for the English component description, assignment coverage, demo script, and handoff limits.
-
-## Architecture and data flow
-
-```text
-TheMealDB API ─┐
-              ├─> Crawler / scheduler ─> data/raw/ ─> Normalize / validate
-Wikibooks API ┘                                                │
-                                                              v
-                                                    data/processed/
-                                                              │
-                                             Person 3 database / API (pending)
-                                                              │
-                                                              v
-                                                 Person 4 website (implemented)
-                                                 ↑
-                                      Synthetic mock adapter (default)
-```
-
-- **Raw data lake:** retains original JSON, source IDs/URLs, attribution, license/terms notes, collection time, and run metadata.
-- **Processed data:** uses one recipe schema across sources and retains original measurements, source provenance, validation errors, and duplicate candidates.
-- **Recipe versions:** each provider record remains separate. Similar title/region records are flagged for review rather than merged automatically.
-- **Incomplete information:** allergens, nutrition, tips, substitutions, time, and difficulty are only populated when supplied by a source. Images remain provider URLs; the crawler does not download image files.
-- **Collection target:** about five countries, 100–150 dishes, two or three sources, and five to eight dish categories. These are project targets, not claims about existing collected data.
-
-The shared processed schema is documented in [integration-contract.md](docs/integration-contract.md). Architectural choices and limits are in [architecture-decisions.md](docs/architecture-decisions.md).
-
-## Data sources
-
-1. **TheMealDB API:** official endpoints using test key `1` for development/education. Preserve attribution and follow [TheMealDB's terms](https://www.themealdb.com/terms_of_use.php). Use the API rather than scraping its website. The free development API is not assumed to authorize a public application release.
-2. **Wikibooks Cookbook API:** recipe-category pages via MediaWiki. Preserve attribution and page URLs. Most text is distributed under CC BY-SA 4.0/GFDL, but individual page/media notices may differ; review [Wikibooks copyright policy](https://en.wikibooks.org/wiki/Wikibooks:Copyrights).
-
-Source settings, configured culinary regions, and provenance metadata live in [`config/recipe_sources.json`](config/recipe_sources.json). Review API/robots access, terms, attribution, and storage rights before adding a provider.
-
-## Repository structure
-
-```text
-config/recipe_sources.json       API sources and source rules
-data/raw/                       Original snapshots by source/run/record
-data/processed/recipes/          Normalized records by source
-data/processed/quality_report.json
-data/state/crawl_cursors.json    Persistent provider progress
-data/state/crawl_manifest.jsonl  Snapshot history and provenance
-recipehub/
-  recipe_crawler.py             Person 1: API adapters and raw lake
-  normalize.py                  Person 2: parsing and quality checks
-  models.py                     Shared RecipeRecord / Ingredient schema
-  text.py                       String cleanup, normalization, IDs/hashes
-  config.py                     Paths, source configuration, crawler settings
-  cli.py                        crawl / normalize / schedule / stats
-frontend/
-  index.html                    Person 4: discovery, detail, and chat interface
-  styles.css                    Responsive styling and CSS illustrations
-  app.js                        Rendering, interactions, and UI state
-  api.js                        Interchangeable mock / HTTP clients
-  domain.js                     Filtering, pagination, and demo retrieval
-  mock-data.js                  Explicitly synthetic recipe fixtures
-  config.js                     Browser-visible mode and API URL configuration
-  tests/                        Frontend domain and API adapter tests
-docs/                           Schema, architecture, API proposal, delivery report
-tests/                          Python parser, crawler, and pipeline tests
-.github/workflows/ci.yml         Python and frontend checks
-.env.example                    Crawler User-Agent / delay / timeout example
-```
-
-## Team responsibilities
-
-### Person 1 — Nguyễn Thành Trí (`2474802010400`)
-
-- Review permitted sources; implement API adapters and configuration-driven crawling.
-- Save original snapshots under `data/raw/<source>/runs/<run_id>/records/`.
-- Preserve source URLs, IDs, attribution, license/terms, and collection time; handle timeouts, HTTP 429, and rate limits.
-- Schedule daily or weekly collection; recipes do not need a 30-minute crawl interval.
-
-### Person 2 — Phạm Thị Khánh Ngân (`2474802016786`)
-
-- Co-design the Recipe/Ingredient schema with Person 1.
-- Parse snapshots, normalize names/units only when unambiguous, and preserve original quantities.
-- Validate required fields; create processed records and quality/duplicate reports.
-- Preserve each source/version rather than merging dishes merely because their names match.
-
-**Persons 1–2 coordination:** agree on the schema and a raw-to-processed example first. Person 1 owns `recipe_crawler.py` and source configuration; Person 2 owns normalization/schema. Review the contract together and coordinate edits to shared files.
-
-### Person 3 — Nguyễn Dũng (`2474802015692`) — pending
-
-- Build a database/knowledge base from processed records, with exact queries and full-text search.
-- Implement recipe search, filters, details, and source-cited answers through an HTTP API.
-- Manage conversation context. If using an LLM, synthesize only retrieved facts and do not invent ingredients, allergens, or nutrition.
-- Respect ingredient exclusions and only offer substitutions supported by source data; do not claim medical safety.
-- Consider vector retrieval after the SQL/full-text baseline works.
-- Review [the website API proposal](docs/frontend-api-contract.md) with Person 4 before integration.
-
-### Person 4 — Nguyễn Trần Hoàng Nhân (`2474802010272`) — implemented with mocks
-
-- Build the English recipe discovery website and conversation interface.
-- Display recipes and attribution; offer region/category/time/difficulty filters when values exist.
-- Accept ingredient-avoidance preferences and clearly communicate source/data limitations.
-- Develop against mock responses in parallel, then connect the backend through the HTTP adapter.
-
-Code is in [`frontend/`](frontend/); the English [delivery report](docs/person-4-delivery.md) describes the implementation and remaining backend dependency.
-
-## Run ingestion and normalization — Persons 1–2
-
-Python 3.11 or later is required. In PowerShell:
+Chạy các lệnh sau một lần:
 
 ```powershell
+# Tạo môi trường Python riêng cho dự án trong thư mục .venv.
 python -m venv .venv
+# Cài các thư viện mà dự án cần vào môi trường vừa tạo.
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
+# Tạo file .env từ mẫu nếu máy chưa có; không ghi đè cấu hình/khóa đã lưu.
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-Before crawling, edit `.env` and replace `CRAWLER_USER_AGENT` with a bot name that includes a real contact email or public project URL, following [Wikimedia's API access policy](https://www.mediawiki.org/wiki/Wikimedia_APIs/Access_policy). Placeholder contact details are rejected. To skip Wikibooks temporarily, set its source configuration to `"enabled": false`. Never commit `.env` or secrets.
+Mở `.env`, đặt `CRAWLER_USER_AGENT` thành tên dự án kèm email liên hệ thật hoặc URL dự án công khai. Wikibooks yêu cầu User-Agent có thông tin liên hệ. Không đưa tệp `.env` hoặc thông tin bí mật lên GitHub. Khóa phát triển của TheMealDB đã được cấu hình cho mục đích học tập; cần tuân thủ yêu cầu ghi nguồn và điều khoản của dịch vụ.
 
-Crawl at most ten recipes per enabled source, then normalize and inspect coverage:
+Phần hỏi đáp cơ bản truy xuất dữ liệu hoạt động mà không cần khóa API mô hình AI. Để bật Gemini cho hỏi đáp linh hoạt, dịch nội dung và tự tìm món chưa có, điền `RECIPEHUB_LLM_API_KEY` trong `.env` phía máy chủ; endpoint và model Gemini đã có sẵn trong mẫu. Khởi động lại máy chủ sau khi sửa `.env`. Không dán khóa vào README, mã nguồn hoặc frontend. Mô hình trả lời dựa trên công thức đã truy xuất; kết quả tìm web chỉ được nhập vào kho khi trang có dữ liệu Recipe JSON-LD. Tìm kiếm grounding có thể dùng hạn mức hoặc phát sinh chi phí theo tài khoản Gemini; kiểm tra mức sử dụng trước khi chạy thường xuyên. Nếu chat hiện lỗi `429` như đã hết hạn mức/giới hạn yêu cầu, Gemini không thể trả lời hoặc tìm web cho đến khi tài khoản được cấp lại hạn mức; kiểm tra mức sử dụng/tùy chọn thanh toán hoặc dùng khóa có hạn mức còn lại trong `.env` rồi khởi động lại máy chủ.
+
+Để thêm một website thủ công, thêm một đối tượng vào mảng trong `config/recipe_sources.json`:
+
+```json
+{
+  "id": "ten_nguon",
+  "name": "Tên website công thức",
+  "type": "schema_org_recipe",
+  "urls": ["https://site.example/recipe-page"],
+  "language": "en",
+  "license": "Ghi chú điều khoản của website",
+  "terms_url": "https://site.example/terms",
+  "attribution": "Ghi công theo yêu cầu của website",
+  "enabled": true
+}
+```
+
+Thay URL ví dụ bằng trang công thức công khai thật, kiểm tra điều khoản và thông tin ghi công của trang đó. Crawler chỉ lấy công thức có dữ liệu Schema.org `Recipe`; không có một bộ phân tích chung đọc đúng mọi bố cục HTML.
+
+### 2. Thu thập dữ liệu và tạo cơ sở tri thức
+
+Chạy lần lượt các lệnh sau từ thư mục gốc. `--max-items 10` giới hạn số mục lấy trong một lượt để chạy thử:
 
 ```powershell
+# Thu thập tối đa 10 mục từ mỗi nguồn và lưu dữ liệu gốc.
 .\.venv\Scripts\python.exe -m recipehub.cli crawl --max-items 10
+# Chuẩn hóa và kiểm tra các dữ liệu vừa thu thập.
 .\.venv\Scripts\python.exe -m recipehub.cli normalize
+# Tạo/cập nhật chỉ mục SQLite để website có thể tìm kiếm dữ liệu.
+.\.venv\Scripts\python.exe -m recipehub.cli build
+# Hiển thị số lượng và tình trạng dữ liệu hiện có.
 .\.venv\Scripts\python.exe -m recipehub.cli stats
 ```
 
-Run crawl followed by normalization daily; use `--days 7` for weekly collection. Keep the terminal open and stop with `Ctrl+C`:
+`crawl` lấy dữ liệu từ các nguồn và lưu bản chụp gốc; `normalize` chuẩn hóa và kiểm tra dữ liệu; `build` cập nhật cơ sở tri thức SQLite; `stats` hiển thị số liệu hiện có.
+
+### 3. Mở website và dùng phần hỏi đáp
+
+Trong cửa sổ PowerShell thứ nhất, chạy:
 
 ```powershell
-.\.venv\Scripts\python.exe -m recipehub.cli schedule --days 1 --max-items 10
+# Khởi chạy website cùng HTTP API trên máy cục bộ.
+.\.venv\Scripts\python.exe -m recipehub.cli serve
 ```
 
-TheMealDB persists its last meal ID per region, while Wikibooks persists category continuation tokens. Progress is stored in `data/state/crawl_cursors.json`. Each raw snapshot appends a manifest entry with run/source IDs, source URL, collection time, and relative snapshot path. Repeated crawls preserve history. Normalization selects the latest snapshot for each provider record. Crawl and normalize commands return nonzero status for source failures or invalid records and print JSON diagnostics.
+Nếu đã thu thập dữ liệu và chỉ muốn mở website lần sau, chỉ cần chạy lệnh `serve`; không cần crawl lại mỗi lần. Lệnh `serve` đọc chỉ mục SQLite đã lưu trên máy.
 
-Generated data is ignored by Git so raw recipe content, processed records, runtime state, and local databases are not published accidentally.
+Mở **http://127.0.0.1:8000** trên trình duyệt. Website và các điểm cuối API `/api/v1` cùng chạy trên địa chỉ này. Bấm **Tiếng Việt / English** ở thanh điều hướng để đổi ngôn ngữ; lựa chọn được lưu trong trình duyệt đó. Dùng khung hỏi đáp trên website để hỏi về các món đã thu thập, ví dụ nguyên liệu, cách chế biến, thời gian hoặc vùng miền. Để dừng máy chủ, quay lại cửa sổ PowerShell và nhấn `Ctrl+C`.
 
-## Validation
+Website mặc định dùng cơ sở tri thức thật đang lưu trên máy. Nếu chưa thu thập hoặc lập chỉ mục dữ liệu, danh sách món sẽ trống; website không tự thay bằng dữ liệu mẫu.
 
-Python pipeline tests use simulated source data without Internet access:
+Để kiểm tra dịch vụ, mở **http://127.0.0.1:8000/api/v1/health**. Trường `status` cần là `ok`; `recipes` cho biết số công thức đã lập chỉ mục. `language_model_available` và `web_discovery_available` cho biết cấu hình Gemini đã được nạp. Sau đó thử hỏi một món trong website để kiểm tra luồng chat; health chỉ xác nhận cấu hình, không tự gửi yêu cầu kiểm tra khóa tới Gemini.
+
+### 4. Tự động thu thập mỗi 5 hoặc 30 phút (không bắt buộc)
+
+Để website tiếp tục hoạt động, giữ máy chủ ở cửa sổ PowerShell thứ nhất. Mở cửa sổ PowerShell thứ hai trong VS Code và chọn một lịch chạy:
+
+Chạy mỗi 5 phút:
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall -q recipehub
+# Thu thập tối đa 10 mục mỗi nguồn, rồi chuẩn hóa và cập nhật kho dữ liệu mỗi 5 phút.
+.\.venv\Scripts\python.exe -m recipehub.cli schedule --minutes 5 --max-items 10
+```
+
+Hoặc chạy mỗi 30 phút:
+
+```powershell
+# Thu thập tối đa 10 mục mỗi nguồn, rồi chuẩn hóa và cập nhật kho dữ liệu mỗi 30 phút.
+.\.venv\Scripts\python.exe -m recipehub.cli schedule --minutes 30 --max-items 10
+```
+
+Chỉ chạy một trong hai lệnh trên, không khởi động đồng thời hai bộ lập lịch.
+
+Bộ lập lịch sẽ thu thập, chuẩn hóa và cập nhật cơ sở tri thức ngay khi khởi động, sau đó lặp lại theo lịch. Máy cần luôn bật và có Internet. Có thể dùng `--days 1` để chạy hằng ngày hoặc `--days 7` để chạy hằng tuần. Khoảng thời gian được tính giữa thời điểm bắt đầu mỗi lượt; nếu một lượt chạy lâu hơn khoảng đã đặt, lượt tiếp theo bắt đầu ngay khi lượt hiện tại kết thúc. Đây là bộ lập lịch chạy trên máy cục bộ, không phải dịch vụ nền trên Internet. Nhấn `Ctrl+C` trong cửa sổ PowerShell thứ hai để dừng.
+
+### Lệnh thường dùng
+
+Chạy các lệnh này từ thư mục gốc của dự án. `crawl`, `normalize` và `build` thường chạy theo thứ tự; `serve` chạy website/API; `schedule` tự lặp lại ba bước xử lý dữ liệu.
+
+| Lệnh | Chức năng |
+| --- | --- |
+| `python -m recipehub.cli crawl --max-items 10` | Thu thập tối đa 10 công thức từ mỗi nguồn trong một lượt và lưu bản gốc vào `data/raw/`. |
+| `python -m recipehub.cli normalize` | Đọc dữ liệu gốc, chuẩn hóa về cấu trúc chung và ghi bản ghi cùng báo cáo chất lượng vào `data/processed/`. |
+| `python -m recipehub.cli build` | Tạo hoặc cập nhật chỉ mục tìm kiếm SQLite từ dữ liệu đã chuẩn hóa. |
+| `python -m recipehub.cli stats` | Hiển thị số bản ghi thô, đã chuẩn hóa, đã lập chỉ mục và phân bố vùng miền. |
+| `python -m recipehub.cli serve` | Chạy website và HTTP API tại `http://127.0.0.1:8000`; dừng bằng `Ctrl+C`. |
+| `python -m recipehub.cli schedule --minutes 5 --max-items 10` | Chạy thu thập, chuẩn hóa và cập nhật SQLite ngay, rồi lặp lại mỗi 5 phút cho đến khi nhấn `Ctrl+C`. |
+
+Trong các lệnh trên, thay `python` bằng `\.venv\Scripts\python.exe` nếu chưa kích hoạt môi trường ảo. Các lệnh kiểm thử được ghi ở mục **Kiểm tra dự án** phía dưới; chúng không cần chạy để khởi động website.
+
+## Luồng dữ liệu
+
+```text
+API hoặc website công thức đã chọn
+              ↓
+Bộ thu thập và bộ lập lịch
+              ↓
+       data/raw (bản chụp gốc)
+              ↓
+      Chuẩn hóa và kiểm tra
+              ↓
+   data/processed (bản ghi JSON)
+              ↓
+    Cơ sở tri thức SQLite + FTS
+              ↓
+      HTTP API và website công thức
+```
+
+Khi thiếu món, Gemini Search có thể tìm URL công thức, sau đó bộ thu thập chỉ lưu các trang có JSON-LD `Recipe`. Bản ghi được thêm vào data lake, chuẩn hóa và lập chỉ mục; bản gốc luôn giữ thông tin URL và ghi công. Nếu trang không có dữ liệu có cấu trúc hoặc không tải được, trang đó không được thêm.
+
+Bản chụp gốc và tệp kê khai thu thập lưu lại mã nguồn, liên kết, thông tin ghi công, ghi chú điều khoản và thời điểm thu thập. Các bản ghi đã chuẩn hóa dùng chung cấu trúc `RecipeRecord` nhưng vẫn giữ riêng phiên bản của từng nhà cung cấp. Công thức tương tự được đánh dấu để xem xét thay vì tự động gộp. Lệnh `build` cập nhật chỉ mục SQLite từ các tệp JSON đã xử lý.
+
+Dữ liệu thu thập được lưu trên đĩa tại `data/raw/`, `data/processed/` và `data/state/recipes.sqlite3`; tắt máy chủ không xóa các tệp này. Bản dịch thành công được lưu trong `data/state/translation_cache.json` để dùng lại sau khi khởi động lại. Lịch sử hội thoại hiện chỉ ở bộ nhớ và sẽ đặt lại khi khởi động lại máy chủ.
+
+Giao diện hỏi đáp truy xuất các bản ghi đó và trả về trích dẫn nguồn. Chế độ không dùng mô hình AI có thể trả lời các câu hỏi phổ biến về nguyên liệu, hướng dẫn, thời gian, vùng miền và nguyên liệu thay thế do nguồn cung cấp. Có thể cấu hình mô hình ngôn ngữ tùy chọn để diễn đạt linh hoạt hơn, dựa trên dữ liệu đã truy xuất. Trường thông tin bị thiếu phải được xem là chưa rõ. Hệ thống không được tự bịa nguyên liệu thay thế, dinh dưỡng, thông tin dị ứng hoặc kết luận an toàn y tế. Bộ lọc nguyên liệu chỉ so khớp văn bản nên không phát hiện được mọi nguyên liệu ẩn hoặc nguy cơ nhiễm chéo.
+
+## Cấu trúc thư mục mã nguồn
+
+| Đường dẫn | Chức năng |
+| --- | --- |
+| `config/recipe_sources.json` | Cấu hình API nguồn, vùng miền và ghi chú ghi nguồn |
+| `data/raw/` | Bản chụp dữ liệu gốc, được nhóm theo nhà cung cấp và lượt thu thập |
+| `data/processed/recipes/` | Các bản ghi công thức JSON đã chuẩn hóa |
+| `data/processed/quality_report.json` | Báo cáo chất lượng dữ liệu |
+| `data/state/crawl_manifest.jsonl` | Tệp kê khai lưu lịch sử thu thập và URL nguồn |
+| `data/state/crawl_cursors.json` | Tiến độ thu thập của từng nguồn |
+| `data/state/recipes.sqlite3` | Cơ sở tri thức SQLite được tạo trên máy; Git bỏ qua tệp này |
+| `data/state/translation_cache.json` | Bản dịch nội dung công thức đã tạo thành công để dùng lại giữa các lần chạy |
+| `recipehub/recipe_crawler.py` | Bộ kết nối nguồn, thử lại khi lỗi, lưu dữ liệu gốc và hỗ trợ bộ lập lịch |
+| `recipehub/normalize.py` | Cấu trúc dữ liệu công thức chung, phân tích, kiểm tra chất lượng và báo cáo bản ghi trùng tiềm năng |
+| `recipehub/knowledge_base.py` | Chỉ mục SQLite, bộ lọc, danh mục và tìm kiếm toàn văn |
+| `recipehub/api.py` | Máy chủ website, HTTP API và dịch vụ hỏi đáp có trích dẫn |
+| `recipehub/cli.py` | Các lệnh `crawl`, `normalize`, `build`, `stats`, `schedule` và `serve` |
+| `frontend/` | Website song ngữ để tìm món, xem chi tiết, lọc và hỏi đáp |
+| `docs/` | Quyết định kiến trúc, cấu trúc dữ liệu, API và tài liệu bàn giao |
+| `tests/` | Kiểm thử quy trình xử lý dữ liệu Python |
+| `frontend/tests/` | Kiểm thử JavaScript của website |
+| `.github/workflows/ci.yml` | Các bước kiểm tra tự động trên GitHub Actions |
+
+## Phân công công việc
+
+- **Thành viên 1 — Nguyễn Thành Trí (`2474802010400`):** chọn nguồn, xây bộ thu thập qua API, lưu bản chụp gốc và thông tin nguồn, xử lý thử lại, vị trí tiếp tục thu thập và lịch thu thập.
+- **Thành viên 2 — Phạm Thị Khánh Ngân (`2474802016786`):** xây cấu trúc dữ liệu công thức chung, chuẩn hóa, kiểm tra dữ liệu và báo cáo các bản ghi có khả năng trùng.
+- **Thành viên 3 — Nguyễn Dũng (`2474802015692`):** xây cơ sở tri thức SQLite, tìm kiếm toàn văn, các điểm truy cập API, truy xuất và câu trả lời dựa trên nguồn.
+- **Thành viên 4 — Nguyễn Trần Hoàng Nhân (`2474802010272`):** xây website tìm kiếm, bộ lọc, chi tiết công thức, trích dẫn nguồn và giao diện hỏi đáp.
+
+Quy ước bàn giao dữ liệu chung được mô tả trong [integration-contract.md](docs/integration-contract.md). Các điểm truy cập API của website được ghi trong [frontend-api-contract.md](docs/frontend-api-contract.md); ghi chú triển khai của thành viên 3 nằm trong [person-3-delivery.md](docs/person-3-delivery.md).
+
+## Báo cáo và thuyết trình cuối kỳ
+
+Báo cáo cuối kỳ cần trình bày kiến trúc và lý do chọn kiến trúc, phần đã triển khai, một thử nghiệm nhỏ và các giới hạn hiện tại. Bài trình chiếu và phần bảo vệ trực tiếp nên trình bày:
+
+1. Chủ đề, nguồn dữ liệu, ghi công/điều khoản và thông tin mỗi nguồn cung cấp.
+2. Một lượt thu thập dữ liệu và nơi lưu bản chụp gốc, tệp kê khai cùng tiến độ thu thập.
+3. Quá trình chuẩn hóa theo cấu trúc dữ liệu chung, kiểm tra dữ liệu và xử lý các bản ghi có khả năng trùng.
+4. Cách tạo cơ sở tri thức SQLite và tìm theo nguyên liệu/vùng miền, gồm cả bộ lọc loại trừ.
+5. Cách đặt câu hỏi trên website và mở trích dẫn để xem bản ghi gốc.
+6. Bộ lập lịch hằng ngày/hằng tuần, cách hệ thống xử lý dữ liệu nguồn bị thiếu và lý do kết quả lọc dị ứng không phải cam kết an toàn.
+
+Mỗi thành viên cần giải thích và trình diễn phần việc được giao. Mục tiêu khoảng năm vùng miền, 100–150 món, nhiều nguồn và một số danh mục là mục tiêu thu thập, không phải số liệu đã có sẵn trong thư mục mã nguồn. Khi thuyết trình, hãy báo cáo số liệu thực tế từ lệnh `stats`.
+
+Tham khảo [dàn ý trình chiếu và thứ tự trình diễn trực tiếp](docs/presentation-outline.md) khi chuẩn bị thuyết trình.
+
+## Kiểm tra dự án
+
+Bộ kiểm thử Python dùng phản hồi mô phỏng nên không cần truy cập các nguồn dữ liệu trực tiếp:
+
+```powershell
+# Chạy bộ kiểm thử Python từ thư mục gốc của dự án.
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Frontend checks require Node.js 24 and no installed npm packages:
+Các bước kiểm tra giao diện website cần Node.js 24; không cần cài thêm gói npm:
 
 ```powershell
+# Chuyển vào thư mục chứa mã nguồn website.
 cd frontend
+# Kiểm tra cú pháp các tệp JavaScript của website.
 npm run check
+# Chạy các kiểm thử JavaScript của website.
 npm test
 ```
 
-GitHub Actions runs both suites. See the delivery guide for the manual browser demonstration and backend integration checklist.
-
-## Proof-of-concept limits
-
-The crawler/normalizer produces a local data lake, not a distributed storage system. Parser quality depends on source structure. A vector database is an optional retrieval tool and is not itself the entire knowledge base.
-
-The website currently demonstrates its flows against synthetic fixtures. The database, live backend, and LLM answer service are pending. Demo chat supports limited English lookup and follow-up patterns. API integration requires Person 3's compatible implementation and CORS setup.
-
-Current providers do not offer complete structured allergen or substitution data. Empty declarations mean unknown. Ingredient exclusions use text matching and cannot check all aliases, hidden ingredients, or cross-contact. Neither filtering nor conversation should be presented as a medical safety guarantee. Missing source fields remain empty/null and are explicitly labeled in the interface.
+GitHub Actions tự chạy cả hai nhóm kiểm tra. Thu thập dữ liệu trực tiếp vẫn phụ thuộc vào kết nối Internet, hoạt động của API/trang nguồn và User-Agent có thông tin liên hệ thật đối với các nguồn yêu cầu điều đó. Wikibooks đang tắt mặc định; có thể bật lại nếu nhóm muốn dùng và đã cấu hình User-Agent phù hợp.

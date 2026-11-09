@@ -12,84 +12,85 @@
     <script src="./app.js" type="module"></script>
   </head>
   <body>
-    <a class="skip-link" href="#main">Skip to recipes</a>
+    <a class="skip-link" href="#main" data-i18n="skip">Skip to recipes</a>
     <header class="site-header">
-      <a class="brand" href="./" aria-label="Recipe Atlas home"><span class="brand-icon" aria-hidden="true">✳</span> Recipe Atlas<span class="brand-dot">.</span></a>
-      <nav aria-label="Main navigation">
-        <a class="nav-active" href="#discover">Discover</a>
-        <a href="#assistant">Kitchen companion</a>
-        <button id="about-button" class="text-button" type="button">About the data ↗</button>
+      <a class="brand" href="./" aria-label="Recipe Atlas home" data-i18n-aria-label="brandHome"><span class="brand-icon" aria-hidden="true">✳</span> Recipe Atlas<span class="brand-dot">.</span></a>
+      <nav aria-label="Main navigation" data-i18n-aria-label="navLabel">
+        <a class="nav-active" href="#discover" data-i18n="navDiscover">Discover</a>
+        <a href="#assistant" data-i18n="navAssistant">Kitchen companion</a>
+        <button id="about-button" class="text-button" type="button" data-i18n="aboutData">About the data ↗</button>
+        <button id="language-toggle" class="language-button" type="button" aria-label="Switch language to Vietnamese">Tiếng Việt</button>
       </nav>
-      <span id="mode-badge" class="mode-badge">Classroom demo</span>
+      <span id="mode-badge" class="mode-badge">Connected knowledge base</span>
     </header>
 
     <main id="main">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow"><span aria-hidden="true">—</span> GLOBAL CULINARY KNOWLEDGE BASE</p>
-          <h1 id="hero-title">A little curiosity.<br />A world of <em>flavor.</em></h1>
-          <p class="hero-description">Find your next favorite dish. Explore recipes across cultures, discover what goes into them, and follow every recipe back to its source.</p>
-          <a class="primary-button hero-button" href="#discover">Explore the collection <span aria-hidden="true">↗</span></a>
-          <p class="hero-footnote">Different traditions. Thoughtful discovery. Sources included.</p>
+          <p class="eyebrow"><span aria-hidden="true">—</span> <span data-i18n="globalEyebrow">GLOBAL CULINARY KNOWLEDGE BASE</span></p>
+          <h1 id="hero-title" data-i18n-html="heroTitle">A little curiosity.<br />A world of <em>flavor.</em></h1>
+          <p class="hero-description" data-i18n="heroDescription">Find your next favorite dish. Explore recipes across cultures, discover what goes into them, and follow every recipe back to its source.</p>
+          <a class="primary-button hero-button" href="#discover"><span data-i18n="heroButton">Explore the collection</span><span aria-hidden="true">↗</span></a>
+          <p class="hero-footnote" data-i18n="heroFootnote">Different traditions. Thoughtful discovery. Sources included.</p>
         </div>
-        <div class="hero-art" role="img" aria-label="Illustration of a bowl with vegetables and herbs on a warm kitchen table">
-          <span class="art-caption">GOOD FOOD HAS A STORY</span>
+        <div class="hero-art" role="img" aria-label="Illustration of a bowl with vegetables and herbs on a warm kitchen table" data-i18n-aria-label="heroImageAlt">
+          <span class="art-caption" data-i18n="artCaption">GOOD FOOD HAS A STORY</span>
           <div class="art-orbit"></div><div class="herb herb-one"></div><div class="herb herb-two"></div>
           <div class="bowl"><div class="bowl-food"><i class="tomato t1"></i><i class="tomato t2"></i><i class="tomato t3"></i><i class="leaf l1"></i><i class="leaf l2"></i><i class="leaf l3"></i><i class="grain g1"></i><i class="grain g2"></i><i class="grain g3"></i></div></div>
-          <div class="art-note"><span aria-hidden="true">✳</span> Your next adventure<br /><strong>starts at the table.</strong></div>
-          <span class="art-bottom">THE RECIPE ATLAS COLLECTION / EST. 2026</span>
+          <div class="art-note"><span aria-hidden="true">✳</span> <span data-i18n-html="artNote">Your next adventure<br /><strong>starts at the table.</strong></span></div>
+          <span class="art-bottom" data-i18n="artBottom">THE RECIPE ATLAS COLLECTION / EST. 2026</span>
         </div>
       </section>
 
-      <div id="data-banner" class="data-banner"><span aria-hidden="true">ⓘ</span><p><strong>You're exploring a classroom demo.</strong> Recipes and answers are synthetic examples, not crawled source material. No medical safety claims.</p><button id="data-info" class="text-button" type="button">How it works ↗</button></div>
+      <div id="data-banner" class="data-banner"><span aria-hidden="true">ⓘ</span><p><strong data-i18n="dataBannerStrong">You're exploring a classroom demo.</strong> <span data-i18n="dataBannerText">Recipes and answers are synthetic examples, not crawled source material. No medical safety claims.</span></p><button id="data-info" class="text-button" type="button" data-i18n="howItWorks">How it works ↗</button></div>
 
       <section id="discover" class="discovery" aria-labelledby="discover-title">
-        <div class="section-heading"><div><p class="eyebrow">FIND SOMETHING DELICIOUS</p><h2 id="discover-title">Where shall we eat today?</h2></div><p class="section-subtitle">A new place. A familiar ingredient.<br />Something worth making.</p></div>
+        <div class="section-heading"><div><p class="eyebrow" data-i18n="discoverEyebrow">FIND SOMETHING DELICIOUS</p><h2 id="discover-title" data-i18n="discoverTitle">Where shall we eat today?</h2></div><p class="section-subtitle" data-i18n-html="discoverSubtitle">A new place. A familiar ingredient.<br />Something worth making.</p></div>
         <form id="search-form" class="search-bar" role="search">
-          <span class="search-symbol" aria-hidden="true">⌕</span><label class="sr-only" for="search">Search recipes, ingredients, or cuisines</label>
-          <input id="search" type="search" placeholder="A dish, an ingredient, a place…" maxlength="200" autocomplete="off" />
-          <button class="primary-button" type="submit">Find recipes <span aria-hidden="true">→</span></button>
+          <span class="search-symbol" aria-hidden="true">⌕</span><label class="sr-only" for="search" data-i18n="searchLabel">Search recipes, ingredients, or cuisines</label>
+          <input id="search" type="search" placeholder="A dish, an ingredient, a place…" data-i18n-placeholder="searchPlaceholder" maxlength="200" autocomplete="off" />
+          <button class="primary-button" type="submit"><span data-i18n="searchButton">Find recipes</span><span aria-hidden="true">→</span></button>
         </form>
         <div class="workspace">
           <aside class="filters" aria-labelledby="filter-title">
-            <div class="filter-heading"><h3 id="filter-title">Make it yours</h3><button id="reset-filters" class="text-button" type="button">Reset</button></div>
+            <div class="filter-heading"><h3 id="filter-title" data-i18n="filterTitle">Make it yours</h3><button id="reset-filters" class="text-button" type="button" data-i18n="reset">Reset</button></div>
             <form id="filter-form">
-              <label for="country">Country or region</label><select id="country"><option value="">Anywhere in the world</option></select>
-              <label for="category">Type of dish</label><select id="category"><option value="">All categories</option></select>
-              <label for="max-minutes">Total cooking time</label><select id="max-minutes"><option value="">Any duration</option><option value="15">Up to 15 minutes</option><option value="30">Up to 30 minutes</option><option value="60">Up to 1 hour</option></select>
-              <label for="difficulty">Difficulty</label><select id="difficulty"><option value="">Any difficulty</option></select>
+              <label for="country" data-i18n="countryLabel">Country or region</label><select id="country"><option value="" data-i18n="countryAny">Anywhere in the world</option></select>
+              <label for="category" data-i18n="categoryLabel">Type of dish</label><select id="category"><option value="" data-i18n="categoryAll">All categories</option></select>
+              <label for="max-minutes" data-i18n="timeLabel">Total cooking time</label><select id="max-minutes"><option value="" data-i18n="timeAny">Any duration</option><option value="15" data-i18n="time15">Up to 15 minutes</option><option value="30" data-i18n="time30">Up to 30 minutes</option><option value="60" data-i18n="time60">Up to 1 hour</option></select>
+              <label for="difficulty" data-i18n="difficultyLabel">Difficulty</label><select id="difficulty"><option value="" data-i18n="difficultyAny">Any difficulty</option></select>
               <div class="filter-divider"></div>
-              <label for="exclude">Ingredients to avoid</label><input id="exclude" type="text" placeholder="e.g. peanut, shrimp" maxlength="300" aria-describedby="exclude-help" />
-              <p id="exclude-help" class="field-help">Separate terms with commas. Matches listed ingredient names, original wording, and declared allergens.</p>
-              <label class="checkbox-label" for="require-allergens"><input id="require-allergens" type="checkbox" /><span>Only show records with source-declared allergen information</span></label>
-              <p class="filter-note">Missing allergen data means unknown. Filters cannot check cross-contact or guarantee a dish is safe.</p>
-              <button class="secondary-button apply-button" type="submit">Apply preferences</button>
+              <label for="exclude" data-i18n="avoidLabel">Ingredients to avoid</label><input id="exclude" type="text" placeholder="e.g. peanut, shrimp" data-i18n-placeholder="avoidPlaceholder" maxlength="300" aria-describedby="exclude-help" />
+              <p id="exclude-help" class="field-help" data-i18n="avoidHelp">Separate terms with commas. Matches listed ingredient names, original wording, and declared allergens.</p>
+              <label class="checkbox-label" for="require-allergens"><input id="require-allergens" type="checkbox" /><span data-i18n="requireAllergen">Only show records with source-declared allergen information</span></label>
+              <p class="filter-note" data-i18n="allergenCaveat">Missing allergen data means unknown. Filters cannot check cross-contact or guarantee a dish is safe.</p>
+              <button class="secondary-button apply-button" type="submit" data-i18n="applyFilters">Apply preferences</button>
             </form>
-            <div class="sidebar-note"><span aria-hidden="true">↗</span><h4>Every dish has roots.</h4><p>Open a recipe to see its ingredients, method, and source details.</p></div>
+            <div class="sidebar-note"><span aria-hidden="true">↗</span><h4 data-i18n="sidebarTitle">Every dish has roots.</h4><p data-i18n="sidebarText">Open a recipe to see its ingredients, method, and source details.</p></div>
           </aside>
           <div class="results-panel" aria-busy="false" id="results-panel">
-            <div class="results-toolbar"><p id="result-count" role="status" aria-live="polite">Loading the collection…</p><label class="sort-label" for="sort">Sort by <select id="sort"><option value="title">Name A–Z</option><option value="time">Quickest first</option></select></label></div>
-            <div id="active-filters" class="active-filters" aria-label="Applied filters"></div>
+            <div class="results-toolbar"><p id="result-count" role="status" aria-live="polite">Loading the collection…</p><label class="sort-label" for="sort"><span data-i18n="sortLabel">Sort by</span> <select id="sort"><option value="title" data-i18n="sortName">Name A–Z</option><option value="time" data-i18n="sortTime">Quickest first</option></select></label></div>
+            <div id="active-filters" class="active-filters" aria-label="Applied filters" data-i18n-aria-label="appliedFilters"></div>
             <div id="results" class="recipe-grid"></div>
-            <div id="pagination" class="pagination" hidden><button id="previous-page" class="secondary-button" type="button">← Previous</button><span id="page-label"></span><button id="next-page" class="secondary-button" type="button">Next →</button></div>
+            <div id="pagination" class="pagination" hidden><button id="previous-page" class="secondary-button" type="button" data-i18n="previous">← Previous</button><span id="page-label"></span><button id="next-page" class="secondary-button" type="button" data-i18n="next">Next →</button></div>
           </div>
         </div>
       </section>
 
       <section id="assistant" class="assistant-section" aria-labelledby="assistant-title">
-        <div class="assistant-intro"><p class="eyebrow">A LITTLE HELP IN THE KITCHEN</p><h2 id="assistant-title">Curiosity,<br />meet your companion.</h2><p>Ask about ingredients, steps, or recipes that fit your preferences. Answers stay connected to the recipe records they use.</p><div class="assistant-note"><span aria-hidden="true">✳</span><p id="assistant-mode-note">Demo companion: a local recipe lookup, with no AI model or external service.</p></div></div>
-        <div class="chat-panel"><div class="chat-header"><div><span class="online-dot" aria-hidden="true"></span><strong>Kitchen companion</strong></div><button id="clear-chat" class="text-button" type="button">New conversation</button></div>
-          <div id="chat-messages" class="chat-messages" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div>
-          <div id="chat-suggestions" class="chat-suggestions"><button type="button" data-question="Find recipes with tomato">Something with tomato</button><button type="button" data-question="Find recipes from Japan">A taste of Japan</button><button type="button" data-question="Find recipes under 30 minutes">Ready in 30 minutes</button></div>
-          <p class="chat-preferences">Applied search preferences also apply to new questions.</p>
-          <form id="chat-form" class="chat-form"><label for="chat-input" class="sr-only">Your recipe question</label><input id="chat-input" placeholder="What would you like to cook?" required maxlength="1000" autocomplete="off" /><button id="send-chat" class="primary-button" type="submit" aria-label="Send question">↑</button></form>
+        <div class="assistant-intro"><p class="eyebrow" data-i18n="assistantEyebrow">A LITTLE HELP IN THE KITCHEN</p><h2 id="assistant-title" data-i18n-html="assistantTitle">Curiosity,<br />meet your companion.</h2><p data-i18n="assistantIntro">Ask about ingredients, steps, or recipes that fit your preferences. Answers stay connected to the recipe records they use.</p><div class="assistant-note"><span aria-hidden="true">✳</span><p id="assistant-mode-note" data-i18n="assistantNoteApi">Answers use the connected recipe records. Optional language-model answers are grounded in retrieved records.</p></div></div>
+        <div class="chat-panel"><div class="chat-header"><div><span class="online-dot" aria-hidden="true"></span><strong data-i18n="chatTitle">Kitchen companion</strong></div><button id="clear-chat" class="text-button" type="button" data-i18n="newChat">New conversation</button></div>
+          <div id="chat-messages" class="chat-messages" role="log" aria-label="Conversation" data-i18n-aria-label="conversationAria" aria-live="polite" aria-relevant="additions"></div>
+          <div id="chat-suggestions" class="chat-suggestions"><button type="button" data-question-en="Find recipes with tomato" data-question-vi="Tìm món có cà chua" data-i18n="suggestionTomato">Something with tomato</button><button type="button" data-question-en="Find recipes from Japan" data-question-vi="Tìm món ăn Nhật Bản" data-i18n="suggestionJapan">A taste of Japan</button><button type="button" data-question-en="Find recipes under 30 minutes" data-question-vi="Tìm món dưới 30 phút" data-i18n="suggestionQuick">Ready in 30 minutes</button></div>
+          <p class="chat-preferences" data-i18n="chatPreferences">Applied search preferences also apply to new questions.</p>
+          <form id="chat-form" class="chat-form"><label for="chat-input" class="sr-only" data-i18n="questionLabel">Your recipe question</label><input id="chat-input" placeholder="What would you like to cook?" data-i18n-placeholder="questionPlaceholder" required maxlength="1000" autocomplete="off" /><button id="send-chat" class="primary-button" type="submit" aria-label="Send question" data-i18n-aria-label="send">↑</button></form>
           <p id="chat-status" class="chat-status" role="status"></p>
         </div>
       </section>
     </main>
-    <footer><a class="brand" href="#main">✳ Recipe Atlas.</a><p>A world of recipes. A clear view of their sources.</p><span>Global Culinary Knowledge Base · Person 4</span></footer>
-    <dialog id="recipe-dialog" aria-labelledby="recipe-dialog-title"><div class="dialog-top"><span class="eyebrow">FROM THE COLLECTION</span><button id="close-recipe" class="icon-button" type="button" aria-label="Close recipe">×</button></div><div id="recipe-detail"></div></dialog>
-    <dialog id="about-dialog" aria-labelledby="about-title"><div class="dialog-top"><span class="eyebrow">KNOW YOUR SOURCES</span><button id="close-about" class="icon-button" type="button" aria-label="Close data information">×</button></div><h2 id="about-title">Good discovery starts with clear data.</h2><p>Recipe Atlas is the website component of the Global Culinary Knowledge Base, implemented by Nguyễn Trần Hoàng Nhân (2474802010272).</p><p id="about-mode"></p><p>Live recipe records preserve each provider's attribution, source links, license or terms, and collection time. Versions from different providers remain separate. Missing cooking times, difficulty, allergens, nutrition, or substitutions are shown as unavailable, never invented.</p><p>Ingredient exclusion is a text-matching aid. It cannot identify every synonym, hidden ingredient, or cross-contact risk. Missing allergen declarations mean unknown.</p></dialog>
-    <noscript><p class="data-banner">Enable JavaScript to search the recipe collection and use the companion.</p></noscript>
+    <footer><a class="brand" href="#main">✳ Recipe Atlas.</a><p data-i18n="footerTagline">A world of recipes. A clear view of their sources.</p><span data-i18n="footerProject">Global Culinary Knowledge Base · Person 4</span></footer>
+    <dialog id="recipe-dialog" aria-labelledby="recipe-dialog-title"><div class="dialog-top"><span class="eyebrow" data-i18n="dialogEyebrow">FROM THE COLLECTION</span><button id="close-recipe" class="icon-button" type="button" aria-label="Close recipe" data-i18n-aria-label="closeRecipe">×</button></div><div id="recipe-detail"></div></dialog>
+    <dialog id="about-dialog" aria-labelledby="about-title"><div class="dialog-top"><span class="eyebrow" data-i18n="aboutEyebrow">KNOW YOUR SOURCES</span><button id="close-about" class="icon-button" type="button" aria-label="Close data information" data-i18n-aria-label="closeAbout">×</button></div><h2 id="about-title" data-i18n="aboutTitle">Good discovery starts with clear data.</h2><p data-i18n="aboutIntro">Recipe Atlas is the website component of the Global Culinary Knowledge Base, implemented by Nguyễn Trần Hoàng Nhân (2474802010272).</p><p id="about-mode"></p><p data-i18n="aboutProvenance">Live recipe records preserve each provider's attribution, source links, license or terms, and collection time. Versions from different providers remain separate. Missing cooking times, difficulty, allergens, nutrition, or substitutions are shown as unavailable, never invented.</p><p data-i18n="aboutSafety">Ingredient exclusion is a text-matching aid. It cannot identify every synonym, hidden ingredient, or cross-contact risk. Missing allergen declarations mean unknown.</p></dialog>
+    <noscript><p class="data-banner" data-i18n="noscript">Enable JavaScript to search the recipe collection and use the companion.</p></noscript>
   </body>
 </html>

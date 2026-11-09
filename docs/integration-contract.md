@@ -4,11 +4,12 @@ This document is a hand-off contract so the backend and website can start agains
 
 ## Raw envelope (Person 1 output)
 
-Each provider recipe payload is retained with its provenance:
+Each provider recipe payload is retained with its provenance. `source_type` identifies the parser and may differ from `source_id`; for example, an automatically discovered publisher has its own source ID and uses the `schema_org_recipe` parser:
 
 ```json
 {
   "source_id": "themealdb",
+  "source_type": "themealdb",
   "source_name": "TheMealDB",
   "source_record_id": "52772",
   "source_url": "https://www.themealdb.com/meal/52772",
@@ -23,7 +24,7 @@ Each provider recipe payload is retained with its provenance:
 
 Raw files are written below `data/raw/<source_id>/runs/<run_id>/records/`. Each run also has a `run.json` summary. New runs do not overwrite older raw snapshots.
 
-The crawler saves source progress in `data/state/crawl_cursors.json`: a last-seen meal ID per configured TheMealDB area and the MediaWiki category continuation token for Wikibooks. It also appends one row per raw snapshot to `data/state/crawl_manifest.jsonl`, recording run ID, source, provider record ID, source URL, collection time, and relative raw-file path. Re-crawling a page creates another history row. These files are operational state, not part of the recipe schema, and are ignored by Git.
+The crawler saves source progress in `data/state/crawl_cursors.json`: a last-seen meal ID per configured TheMealDB area, the MediaWiki category continuation token, or the next URL index for a configured Schema.org source. It appends one row per raw snapshot to `data/state/crawl_manifest.jsonl`. Gemini-discovered pages record `discovered_by: gemini_google_search`. Re-crawling creates another history row. These files are operational state, not part of the recipe schema, and are ignored by Git.
 
 ## Processed recipe record (Person 2 output)
 
@@ -89,4 +90,4 @@ The currently configured providers do not offer complete structured allergen or 
 
 ## Website implementation (Person 4)
 
-The English website is implemented in `frontend/`. Its default mock adapter uses explicitly synthetic records matching the schema above; these are not collected recipes. A configurable HTTP adapter is ready for Person 3's backend. The proposed endpoint contract is documented in [frontend-api-contract.md](frontend-api-contract.md), and the component handoff is in [person-4-delivery.md](person-4-delivery.md). Backend/database implementation and live integration remain Person 3's work.
+The bilingual English/Vietnamese website is implemented in `frontend/` and defaults to API mode. `recipehub/knowledge_base.py` loads processed records into SQLite, while `recipehub/api.py` serves the contract documented in [frontend-api-contract.md](frontend-api-contract.md). When Gemini is configured, missing recipe searches can fetch and index up to three public pages that expose Schema.org Recipe JSON-LD. Discovered raw records retain the original page and source link; their website terms still need review. Pages without the structured recipe data are skipped. Synthetic fixtures remain available in mock mode and are not collected recipes. The component handoff is in [person-4-delivery.md](person-4-delivery.md).

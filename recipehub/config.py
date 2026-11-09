@@ -37,10 +37,18 @@ class Settings:
     )
     timeout_seconds: int = int(os.getenv("CRAWLER_TIMEOUT_SECONDS", "25"))
     delay_seconds: float = float(os.getenv("CRAWLER_DELAY_SECONDS", "1.5"))
+    llm_api_base_url: str = os.getenv("RECIPEHUB_LLM_API_BASE_URL", "").rstrip("/")
+    llm_api_key: str = os.getenv("RECIPEHUB_LLM_API_KEY", "")
+    llm_model: str = os.getenv("RECIPEHUB_LLM_MODEL", "")
+    llm_timeout_seconds: int = int(os.getenv("RECIPEHUB_LLM_TIMEOUT_SECONDS", "45"))
 
     def ensure_directories(self) -> None:
         for path in (self.raw_dir, self.processed_dir, self.state_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def database_file(self) -> Path:
+        return self.state_dir / "recipes.sqlite3"
 
     def load_sources(self) -> list[dict[str, object]]:
         sources = json.loads(self.sources_file.read_text(encoding="utf-8"))

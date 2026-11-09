@@ -200,8 +200,63 @@ def _wikibooks_sections(raw_html: str) -> tuple[list[Ingredient], list[str], str
     return ingredients, instructions, description
 
 
+def _schema_org_text(value: object) -> str:
+    if isinstance(value, str):
+        return clean_text(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ("text", "name", "value", "@id"):
+            if value.get(key) not in (None, ""):
+                return _schema_org_text(value[key])
+    return ""
+
+
+def _schema_org_instructions(value: object) -> list[str]:
+    if isinstance(value, str):
+        return _split_instructions(value)
+    if isinstance(value, list):
+        return [step for item in value for step in _schema_org_instructions(item)]
+    if isinstance(value, dict):
+        for key in ("itemListElement", "steps"):
+            if isinstance(value.get(key), (list, dict)):
+                return _schema_org_instructions(value[key])
+        text = _schema_org_text(value)
+        return _split_instructions(text) if text else []
+    return []
+
+
+def _schema_org_ingredients(value: object) -> list[Ingredient]:
+    values = value if isinstance(value, list) else [value]
+    ingredients: list[Ingredient] = []
+    for item in values:
+        if isinstance(item, dict):
+            name = _schema_org_text(item.get("name"))
+            amount = _schema_org_text(item.get("value"))
+            unit = _schema_org_text(item.get("unitText"))
+            text = " ".join(part for part in (amount, unit, name) if part)
+            if not text:
+                text = _schema_org_text(item)
+        else:
+            text = _schema_org_text(item)
+        if text:
+            ingredients.append(normalize_ingredient(text))
+    return ingredients
+
+
+def _schema_org_image(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return next((url for item in value if (url := _schema_org_image(item))), "")
+    if isinstance(value, dict):
+        return _schema_org_image(value.get("url") or value.get("contentUrl") or "")
+    return ""
+
+
 def normalize_raw_envelope(envelope: dict[str, Any]) -> RecipeRecord:
     source_id = str(envelope["source_id"])
+    source_type = str(envelope.get("source_type", source_id))
     source_name = str(envelope["source_name"])
     source_record_id = str(envelope["source_record_id"])
     source_url = str(envelope["source_url"])
@@ -213,7 +268,7 @@ def normalize_raw_envelope(envelope: dict[str, Any]) -> RecipeRecord:
     if not isinstance(payload, dict):
         raise ValueError("Raw recipe payload must be a JSON object")
 
-    if source_id == "themealdb":
+    if source_type == "themealdb":
         title = clean_text(str(payload.get("strMeal") or ""))
         original_title = title
         country = clean_text(str(payload.get("strArea") or ""))
@@ -239,7 +294,7 @@ def normalize_raw_envelope(envelope: dict[str, Any]) -> RecipeRecord:
             "youtube_url": clean_text(str(payload.get("strYoutube") or "")),
             "source_category": clean_text(str(payload.get("strCategory") or "")),
         }
-    elif source_id == "wikibooks":
+    elif source_type == "wikibooks":
         parsed = payload.get("parse", payload)
         if not isinstance(parsed, dict):
             raise ValueError("Wikibooks parse result must be a JSON object")
@@ -271,8 +326,35 @@ def normalize_raw_envelope(envelope: dict[str, Any]) -> RecipeRecord:
         language = str(envelope.get("language", "en"))
         source_updated_at = clean_text(str(parsed.get("timestamp") or ""))
         metadata = {"page_id": parsed.get("pageid"), "revision_id": parsed.get("revid")}
+    elif source_type == "schema_org_recipe":
+        recipe = payload.get("json_ld")
+        if not isinstance(recipe, dict):
+            raise ValueError("Schema.org recipe payload must include a JSON-LD Recipe object")
+        title = _schema_org_text(recipe.get("name"))
+        original_title = title
+        country = ", ".join(_tag_list(recipe.get("recipeCuisine")))
+        image_url = _schema_org_image(recipe.get("image"))
+        original_recipe_url = _schema_org_text(recipe.get("url")) or source_url
+        description = _schema_org_text(recipe.get("description"))
+        ingredients = _schema_org_ingredients(recipe.get("recipeIngredient"))
+        servings = _schema_org_text(recipe.get("recipeYield"))
+        prep_minutes = parse_minutes(recipe.get("prepTime"))
+        cook_minutes = parse_minutes(recipe.get("cookTime"))
+        total_minutes = parse_minutes(recipe.get("totalTime"))
+        difficulty = ""
+        tools = _tag_list(recipe.get("tool"))
+        instructions = _schema_org_instructions(recipe.get("recipeInstructions"))
+        tips = _tag_list(recipe.get("recipeTips"))
+        substitutions: list[dict[str, str]] = []
+        allergens: list[str] = []
+        raw_nutrition = recipe.get("nutrition")
+        nutrition = raw_nutrition if isinstance(raw_nutrition, dict) else None
+        categories = _tag_list(recipe.get("recipeCategory"))
+        language = _schema_org_text(recipe.get("inLanguage")) or str(envelope.get("language", "en"))
+        source_updated_at = _schema_org_text(recipe.get("dateModified"))
+        metadata = {"schema_type": recipe.get("@type", "Recipe"), "schema_id": recipe.get("@id", "")}
     else:
-        raise ValueError(f"Unsupported source adapter: {source_id}")
+        raise ValueError(f"Unsupported source adapter: {source_type}")
 
     if not title or not ingredients or not instructions:
         raise ValueError("Recipe must contain a title, ingredients, and instructions")

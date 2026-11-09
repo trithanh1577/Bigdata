@@ -1,7 +1,9 @@
 import { createClient } from "./api.js";
 import { hasMinutes, parseExclusions, safeUrl, timeLabel } from "./domain.js";
+import { applyStaticTranslations, currentLanguage, initializeLanguage, setLanguage, t } from "./i18n.js";
 
 const $ = id => document.getElementById(id);
+let language = initializeLanguage();
 function element(tag, className = "", text = "") {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -38,6 +40,35 @@ let history = [];
 let sessionId = null;
 let previousIds = [];
 let chatBusy = false;
+let openRecipeId = null;
+let startupError = null;
+let languageModelAvailable = false;
+let webDiscoveryAvailable = false;
+
+function applyLanguage() {
+  language = currentLanguage();
+  applyStaticTranslations();
+  for (const node of document.querySelectorAll("[data-question-en][data-question-vi]")) {
+    node.dataset.question = language === "vi" ? node.dataset.questionVi : node.dataset.questionEn;
+  }
+  if (!client) {
+    if (startupError) {
+      try { createClient(window.RECIPEHUB_CONFIG, globalThis.fetch, currentLanguage); }
+      catch (error) { startupError = error; }
+      $("mode-badge").textContent = t("modeError");
+      $("result-count").textContent = t("setupRequired");
+      $("results").replaceChildren(statePanel(t("configCheck"), startupError.message));
+      $("chat-status").textContent = startupError.message;
+    }
+    return;
+  }
+  configureMode();
+  renderChips();
+  loadFacets();
+  loadRecipes();
+  if (openRecipeId && $("recipe-dialog").open) openRecipe(openRecipeId);
+  else if (!history.length && !chatBusy && $("chat-messages").children.length === 1) resetChat();
+}
 
 function readFilters() {
   return {
@@ -51,15 +82,15 @@ function readFilters() {
 function statePanel(title, message, retry) {
   const panel = element("div", "empty-state");
   panel.append(element("h3", "", title), element("p", "", message));
-  if (retry) panel.append(button("Try again", "secondary-button", retry));
+  if (retry) panel.append(button(t("tryAgain"), "secondary-button", retry));
   return panel;
 }
 
 function renderChips() {
-  const values = [applied.q && `Search: ${applied.q}`, applied.country, applied.category,
-    applied.max_minutes && `Up to ${applied.max_minutes} min`, applied.difficulty,
-    ...(applied.exclude_ingredients ?? []).map(value => `Avoid: ${value}`),
-    applied.require_allergens && "Allergen declarations available"].filter(Boolean);
+  const values = [applied.q && t("searchChip", { value: applied.q }), applied.country, applied.category,
+    applied.max_minutes && t("timeChip", { value: applied.max_minutes }), applied.difficulty,
+    ...(applied.exclude_ingredients ?? []).map(value => t("avoidChip", { value })),
+    applied.require_allergens && t("allergensChip")].filter(Boolean);
   $("active-filters").replaceChildren(...values.map(value => element("span", "filter-chip", value)));
 }
 
@@ -68,8 +99,8 @@ function recipeVisual(recipe, index) {
   const palette = ["#e2e8d5", "#efe0c7", "#e1e6d9", "#e7d9bf", "#ede3d5", "#dce5d8"];
   visual.style.setProperty("--card-bg", palette[index % palette.length]);
   const placeholder = () => {
-    visual.replaceChildren(element("div", "mini-bowl"), element("span", "illustration-label", "Illustration · not a dish photo"));
-    visual.setAttribute("aria-label", "Decorative food illustration; not a photograph of this recipe");
+    visual.replaceChildren(element("div", "mini-bowl"), element("span", "illustration-label", t("illustrationLabel")));
+    visual.setAttribute("aria-label", t("illustrationAlt"));
     visual.setAttribute("role", "img");
   };
   const imageUrl = safeUrl(recipe.image_url);
@@ -89,11 +120,11 @@ function recipeCard(recipe, index) {
   const card = element("article", "recipe-card");
   card.append(recipeVisual(recipe, index));
   const body = element("div", "recipe-body");
-  body.append(element("p", "recipe-country", recipe.country_or_region || "Region not supplied"), element("h3", "", recipe.title),
-    element("p", "recipe-summary", recipe.description || "Open this recipe to explore its ingredients and method."));
+  body.append(element("p", "recipe-country", recipe.country_or_region || t("regionUnknown")), element("h3", "", recipe.title),
+    element("p", "recipe-summary", recipe.description || t("recipeTeaser")));
   const meta = element("div", "recipe-meta");
-  meta.append(element("span", "", `◷ ${timeLabel(recipe.total_minutes)}`), element("span", "", recipe.difficulty || "Difficulty not supplied"));
-  body.append(meta, element("p", "recipe-source", `Source: ${recipe.source_name || "Not supplied"}`), button("View recipe", "recipe-link", () => openRecipe(recipe.record_id)));
+  meta.append(element("span", "", `◷ ${timeLabel(recipe.total_minutes, language)}`), element("span", "", recipe.difficulty || t("difficultyUnknown")));
+  body.append(meta, element("p", "recipe-source", `${t("sourceLabel")}: ${recipe.source_name || t("sourceUnknown")}`), button(t("viewRecipe"), "recipe-link", () => openRecipe(recipe.record_id)));
   card.append(body);
   return card;
 }
@@ -102,24 +133,28 @@ async function loadRecipes() {
   const version = ++searchVersion;
   renderChips();
   $("results-panel").setAttribute("aria-busy", "true");
-  $("result-count").textContent = "Finding your next favorite…";
+  $("result-count").textContent = t("loadingFind");
   $("pagination").hidden = true;
-  $("results").replaceChildren(statePanel("A moment at the table…", "Loading recipe records."));
+  $("results").replaceChildren(statePanel(t("loadingTitle"), t("loadingBody")));
   try {
     const data = await client.search(applied, page);
     if (version !== searchVersion) return;
     page = data.page;
-    $("result-count").textContent = `${data.total} ${data.total === 1 ? "recipe" : "recipes"} ${client.mode === "mock" ? "in the demo collection" : "found"}`;
-    $("results").replaceChildren(...(data.items.length ? data.items.map(recipeCard) : [statePanel("A different kind of adventure?", "No recipes match all of these preferences. Try a broader search or reset the filters.")]));
+    $("result-count").textContent = `${data.total} ${t(data.total === 1 ? "recipeSingular" : "recipePlural")} ${client.mode === "mock" ? t("demoCollection") : t("found")}`;
+    const resultNodes = data.items.length ? data.items.map(recipeCard) : [statePanel(t("emptyTitle"), t("emptyBody"))];
+    if (language === "vi" && client.mode === "api" && data.content_translated !== true) {
+      resultNodes.unshift(element("p", "translation-notice", t("translationNotice")));
+    }
+    $("results").replaceChildren(...resultNodes);
     const pages = Math.max(1, Math.ceil(data.total / data.page_size));
     $("pagination").hidden = pages <= 1;
-    $("page-label").textContent = `Page ${page} of ${pages}`;
+    $("page-label").textContent = t("pageOf", { page, pages });
     $("previous-page").disabled = page <= 1;
     $("next-page").disabled = page >= pages;
   } catch (error) {
     if (version !== searchVersion) return;
-    $("result-count").textContent = "Collection unavailable";
-    $("results").replaceChildren(statePanel("The collection couldn't load.", error.message, loadRecipes));
+    $("result-count").textContent = t("collectionUnavailable");
+    $("results").replaceChildren(statePanel(t("collectionErrorTitle"), error.message, loadRecipes));
   } finally {
     if (version === searchVersion) $("results-panel").setAttribute("aria-busy", "false");
   }
@@ -128,17 +163,18 @@ async function loadRecipes() {
 async function loadFacets() {
   try {
     const facets = await client.facets();
-    for (const [id, key, fallback] of [["country", "countries", "Anywhere in the world"], ["category", "categories", "All categories"], ["difficulty", "difficulties", "Any difficulty"]]) {
+    for (const [id, key, fallbackKey] of [["country", "countries", "countryAny"], ["category", "categories", "categoryAll"], ["difficulty", "difficulties", "difficultyAny"]]) {
       const select = $(id);
       const current = select.value;
-      const options = [new Option(fallback, ""), ...facets[key].map(value => new Option(value, value))];
+      const labels = facets.labels?.[key] ?? {};
+      const options = [new Option(t(fallbackKey), ""), ...facets[key].map(value => new Option(labels[value] || value, value))];
       select.replaceChildren(...options);
       select.value = current;
     }
   } catch (error) {
-    const warning = element("div", "filter-note", `Filter options unavailable. ${error.message} `);
+    const warning = element("div", "filter-note", `${t("facetError")} ${error.message} `);
     warning.id = "facet-error";
-    warning.append(button("Retry filter options", "text-button", () => { warning.remove(); loadFacets(); }));
+    warning.append(button(t("retryFacets"), "text-button", () => { warning.remove(); loadFacets(); }));
     $("filter-form").prepend(warning);
   }
 }
@@ -158,64 +194,71 @@ function detailSection(title, lines) {
 }
 
 function readableDate(value) {
-  if (!value) return "Not supplied";
+  if (!value) return t("notSupplied");
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Not supplied" : date.toLocaleString("en-GB", { timeZoneName: "short" });
+  return Number.isNaN(date.getTime()) ? t("notSupplied") : date.toLocaleString(language === "vi" ? "vi-VN" : "en-GB", { timeZoneName: "short" });
 }
 
 function renderRecipe(recipe) {
   const root = document.createDocumentFragment();
+  if (language === "vi" && client.mode === "api" && recipe.content_translated !== true) {
+    root.append(element("p", "translation-notice", t("translationNotice")));
+  }
   const header = element("div", "detail-header");
-  header.append(element("p", "recipe-country", recipe.country_or_region || "Region not supplied"));
+  header.append(element("p", "recipe-country", recipe.country_or_region || t("regionUnknown")));
   const title = element("h2", "", recipe.title);
   title.id = "recipe-dialog-title";
-  header.append(title, element("p", "", recipe.description || "Description not supplied."));
-  if (recipe.original_title && recipe.original_title !== recipe.title) header.append(element("p", "", `Original title: ${recipe.original_title}`));
+  header.append(title, element("p", "", recipe.description || t("descriptionUnknown")));
+  // Keep the source-language title visible in English mode. In Vietnamese mode,
+  // the localized title above already represents it, so avoid mixing languages.
+  if (language !== "vi" && recipe.original_title && recipe.original_title !== recipe.title) {
+    header.append(element("p", "", t("originalTitle", { value: recipe.original_title })));
+  }
   root.append(header);
-  if (client.mode === "mock") root.append(element("p", "filter-note", "Synthetic classroom example. This is not a crawled source recipe."));
+  if (client.mode === "mock") root.append(element("p", "filter-note", t("syntheticNote")));
   const imageUrl = safeUrl(recipe.image_url);
   if (imageUrl) {
     const image = element("img", "detail-image"); image.alt = recipe.title; image.referrerPolicy = "no-referrer";
     image.addEventListener("error", () => image.remove(), { once: true }); image.src = imageUrl; root.append(image);
   }
   const badges = element("div", "detail-badges");
-  const values = [timeLabel(recipe.total_minutes), recipe.difficulty || "Difficulty not supplied", recipe.servings ? `Servings: ${recipe.servings}` : "Servings not supplied", ...recipe.categories];
-  if (hasMinutes(recipe.prep_minutes)) values.push(`Prep: ${recipe.prep_minutes} min`);
-  if (hasMinutes(recipe.cook_minutes)) values.push(`Cook: ${recipe.cook_minutes} min`);
+  const values = [timeLabel(recipe.total_minutes, language), recipe.difficulty || t("difficultyUnknown"), recipe.servings ? t("servings", { value: recipe.servings }) : t("servingsUnknown"), ...recipe.categories];
+  if (hasMinutes(recipe.prep_minutes)) values.push(t("prep", { value: recipe.prep_minutes }));
+  if (hasMinutes(recipe.cook_minutes)) values.push(t("cook", { value: recipe.cook_minutes }));
   badges.append(...values.map(value => element("span", "", value)));
   root.append(badges);
   const layout = element("div", "detail-layout");
-  const ingredients = element("section"); ingredients.append(element("h3", "", "Ingredients"));
+  const ingredients = element("section"); ingredients.append(element("h3", "", t("ingredients")));
   const list = element("ul", "ingredient-list");
   list.append(...recipe.ingredients.map(item => element("li", "", item.original_text || [item.quantity, item.unit, item.name, item.notes].filter(Boolean).join(" "))));
   ingredients.append(list);
-  if (!recipe.ingredients.length) ingredients.append(element("p", "", "Ingredients not supplied."));
-  const method = element("section"); method.append(element("h3", "", "Let's make it"));
+  if (!recipe.ingredients.length) ingredients.append(element("p", "", t("ingredientsUnknown")));
+  const method = element("section"); method.append(element("h3", "", t("makeIt")));
   const steps = element("ol", "instruction-list"); steps.append(...recipe.instructions.map(step => element("li", "", step))); method.append(steps);
-  if (!recipe.instructions.length) method.append(element("p", "", "Instructions not supplied."));
+  if (!recipe.instructions.length) method.append(element("p", "", t("instructionsUnknown")));
   layout.append(ingredients, method); root.append(layout);
-  root.append(detailSection("Allergens & dietary information", [recipe.allergens.length ? `Source-declared allergens: ${recipe.allergens.join(", ")}. This list may be incomplete.` : "No source-declared allergen information is available. Allergen status is unknown.", "Text filters cannot verify dietary suitability or cross-contact risk."]));
+  root.append(detailSection(t("allergensDiet"), [recipe.allergens.length ? `${t("sourceDeclaredAllergens", { value: recipe.allergens.join(", ") })} ${t("incomplete")}` : t("allergenUnknown"), t("crossContact")]));
   if (recipe.nutrition && Object.keys(recipe.nutrition).length) {
-    root.append(detailSection("Source-declared nutrition", Object.entries(recipe.nutrition).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`)));
-  } else root.append(detailSection("Nutrition", ["Not supplied by the source."]));
-  if (recipe.tools.length) root.append(detailSection("Tools", [recipe.tools.join(", ")]));
-  if (recipe.tips.length) root.append(detailSection("Source tips", recipe.tips));
+    root.append(detailSection(t("nutritionSource"), Object.entries(recipe.nutrition).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`)));
+  } else root.append(detailSection(t("nutrition"), [t("nutritionUnknown")]));
+  if (recipe.tools.length) root.append(detailSection(t("tools"), [recipe.tools.join(", ")]));
+  if (recipe.tips.length) root.append(detailSection(t("tips"), recipe.tips));
   // Preserve the supplied substitution fields; do not assume provider key names.
-  root.append(detailSection("Source-declared substitutions", recipe.substitutions.length ? recipe.substitutions.map(item => Object.entries(item).map(([key, value]) => `${key}: ${value}`).join("; ")) : ["No substitutions supplied. The companion will not invent replacements."]));
+  root.append(detailSection(t("substitutions"), recipe.substitutions.length ? recipe.substitutions.map(item => Object.entries(item).map(([key, value]) => `${key}: ${value}`).join("; ")) : [t("substitutionsUnknown")]));
   const source = element("section", "source-box");
-  source.append(element("h3", "", "Follow the source"), element("p", "", `Provider: ${recipe.source_name || "Not supplied"}`),
-    element("p", "", recipe.attribution || "Attribution not supplied."), element("p", "", `License / terms: ${recipe.source_license || "Not supplied"}`),
-    element("p", "", `Collected: ${readableDate(recipe.collected_at)} · Source updated: ${readableDate(recipe.source_updated_at)}`),
-    element("p", "", `Record: ${recipe.record_id} · Provider ID: ${recipe.source_record_id || "Not supplied"}`));
+  source.append(element("h3", "", t("followSource")), element("p", "", t("provider", { value: recipe.source_name || t("sourceUnknown") })),
+    element("p", "", recipe.attribution || t("attributionUnknown")), element("p", "", t("licenseTerms", { value: recipe.source_license || t("notSupplied") })),
+    element("p", "", `${t("collected", { value: readableDate(recipe.collected_at) })} · ${t("sourceUpdated", { value: readableDate(recipe.source_updated_at) })}`),
+    element("p", "", `${t("record", { value: recipe.record_id })} · ${t("providerId", { value: recipe.source_record_id || t("notSupplied") })}`));
   const links = element("div", "source-links");
-  appendLink(links, "Provider record ↗", recipe.source_url); appendLink(links, "Original recipe ↗", recipe.original_recipe_url); appendLink(links, "License / terms ↗", recipe.source_terms_url);
-  if (!links.children.length) links.append(element("p", "", "No external source links supplied."));
+  appendLink(links, t("providerRecord"), recipe.source_url); appendLink(links, t("originalRecipe"), recipe.original_recipe_url); appendLink(links, t("licenseLink"), recipe.source_terms_url);
+  if (!links.children.length) links.append(element("p", "", t("noExternalLinks")));
   source.append(links); root.append(source);
   const actions = element("div", "detail-actions");
-  actions.append(button("Ask about this recipe →", "primary-button", () => {
+  actions.append(button(t("askRecipe"), "primary-button", () => {
     closeRecipe();
     $("assistant").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-    $("chat-input").value = `What are the ingredients in ${recipe.title}?`;
+    $("chat-input").value = language === "vi" ? `Nguyên liệu của món ${recipe.title} là gì?` : `What are the ingredients in ${recipe.title}?`;
     $("chat-input").focus({ preventScroll: true });
   }));
   root.append(actions);
@@ -223,8 +266,9 @@ function renderRecipe(recipe) {
 }
 
 async function openRecipe(id) {
+  openRecipeId = id;
   const version = ++detailVersion;
-  const loading = statePanel("Loading recipe…", "Fetching the full recipe and source details.");
+  const loading = statePanel(t("loadingRecipe"), t("fetchingRecipe"));
   loading.querySelector("h3").id = "recipe-dialog-title";
   $("recipe-detail").replaceChildren(loading);
   if (!$("recipe-dialog").open) $("recipe-dialog").showModal();
@@ -235,12 +279,12 @@ async function openRecipe(id) {
     $("recipe-dialog").scrollTop = 0;
   } catch (error) {
     if (version !== detailVersion || !$("recipe-dialog").open) return;
-    const panel = statePanel("Recipe unavailable", error.message, () => openRecipe(id));
+    const panel = statePanel(t("recipeUnavailable"), error.message, () => openRecipe(id));
     panel.querySelector("h3").id = "recipe-dialog-title";
     $("recipe-detail").replaceChildren(panel);
   }
 }
-function closeRecipe() { detailVersion++; $("recipe-dialog").close(); }
+function closeRecipe() { detailVersion++; openRecipeId = null; $("recipe-dialog").close(); }
 
 function appendMessage(role, text, citations = [], isError = false, showCitationStatus = false) {
   const message = element("div", `message message-${role}${isError ? " message-error" : ""}`);
@@ -249,12 +293,12 @@ function appendMessage(role, text, citations = [], isError = false, showCitation
     const refs = element("div", "citations");
     citations.forEach((item, index) => {
       refs.append(button(`[${index + 1}] ${item.title}`, "citation-button", () => openRecipe(item.record_id)));
-      const link = externalLink(`${item.source_name || "Source"} ↗`, item.source_url);
+      const link = externalLink(`${item.source_name || t("citationSource")} ↗`, item.source_url);
       if (link) { link.className = "citation-source"; refs.append(link); }
     });
     message.append(refs);
   } else if (showCitationStatus && client.mode === "api") {
-    message.append(element("p", "field-help", "No recipe citations supplied for this response."));
+    message.append(element("p", "field-help", t("noCitations")));
   }
   $("chat-messages").append(message);
   // Limit rendered history as well as the request context; preferences stay in memory only.
@@ -267,7 +311,7 @@ function setChatBusy(value) {
   $("send-chat").disabled = value;
   $("chat-input").disabled = value;
   $("chat-suggestions").querySelectorAll("button").forEach(node => { node.disabled = value; });
-  $("chat-status").textContent = value ? "Looking through the recipe records…" : "";
+  $("chat-status").textContent = value ? t("chatBusy") : "";
 }
 
 function resetChat() {
@@ -276,7 +320,7 @@ function resetChat() {
   setChatBusy(false);
   $("chat-messages").replaceChildren();
   $("chat-input").value = "";
-  appendMessage("assistant", client.mode === "mock" ? "Hello, curious cook. I can help you explore this synthetic demo collection. Ask for a dish, an ingredient, or a region; every recipe answer links to its demo records." : "Hello, curious cook. Ask about a dish, ingredient, or region. I will display the backend's answer with the recipe records it cites. Missing source data stays unknown.");
+  appendMessage("assistant", client.mode === "mock" ? t("greetingMock") : t("greetingApi"));
 }
 
 async function sendQuestion(question) {
@@ -287,7 +331,7 @@ async function sendQuestion(question) {
   $("chat-input").value = "";
   setChatBusy(true);
   try {
-    const response = await client.chat({ message, filters: applied, session_id: sessionId, history, previousIds });
+    const response = await client.chat({ message, filters: applied, session_id: sessionId, history, previousIds, language });
     if (version !== chatVersion) return;
     appendMessage("assistant", response.answer, response.citations, false, true);
     sessionId = response.session_id;
@@ -305,11 +349,19 @@ async function sendQuestion(question) {
 
 function configureMode() {
   if (client.mode === "api") {
-    $("mode-badge").textContent = "Backend API mode";
-    $("data-banner").querySelector("p").textContent = "Connected mode: recipe records and answers come from your configured backend. Source links and missing data are shown on each record. Ingredient filters cannot guarantee dietary safety.";
-    $("assistant-mode-note").textContent = "Answers are supplied by the configured backend. Follow the citations to inspect the records behind each answer.";
+    $("mode-badge").textContent = t("modeApi");
+    $("data-banner").querySelector("strong").textContent = t("dataBannerApiStrong");
+    $("data-banner").querySelector("p span[data-i18n]").textContent = t("dataBannerApiText");
+    $("assistant-mode-note").textContent = language === "vi" && !languageModelAvailable
+      ? t("assistantNoteApiTranslationUnavailable")
+      : t("assistantNoteApi", { webSearch: t(webDiscoveryAvailable ? "webSearchEnabled" : "webSearchDisabled") });
+  } else {
+    $("mode-badge").textContent = t("modeDemo");
+    $("data-banner").querySelector("strong").textContent = t("dataBannerStrong");
+    $("data-banner").querySelector("p span[data-i18n]").textContent = t("dataBannerText");
+    $("assistant-mode-note").textContent = t("assistantNoteDemo");
   }
-  $("about-mode").textContent = client.mode === "mock" ? "Demo mode uses eight synthetic classroom recipe records and a deterministic local lookup. It makes no network requests to an API or AI model. Dish illustrations are decorative, not photos of the recipes." : "API mode calls Person 3's configured backend for search, detail, filter options, and conversation. If the backend is unavailable, the interface shows an error and lets you retry. It does not silently replace live records with demo data.";
+  $("about-mode").textContent = client.mode === "mock" ? t("aboutModeMock") : t("aboutModeApi");
 }
 
 function bindEvents() {
@@ -322,6 +374,10 @@ function bindEvents() {
   $("close-recipe").addEventListener("click", closeRecipe);
   $("recipe-dialog").addEventListener("cancel", () => { detailVersion++; });
   $("close-about").addEventListener("click", () => $("about-dialog").close());
+  $("language-toggle").addEventListener("click", () => {
+    setLanguage(currentLanguage() === "en" ? "vi" : "en");
+    applyLanguage();
+  });
   for (const id of ["about-button", "data-info"]) $(id).addEventListener("click", () => $("about-dialog").showModal());
   for (const id of ["recipe-dialog", "about-dialog"]) {
     $(id).addEventListener("click", event => {
@@ -335,17 +391,26 @@ function bindEvents() {
 }
 
 async function start() {
+  applyStaticTranslations();
+  bindEvents();
   try {
-    client = createClient(window.RECIPEHUB_CONFIG);
+    client = createClient(window.RECIPEHUB_CONFIG, globalThis.fetch, currentLanguage);
+    if (client.mode === "api") {
+      try {
+        const health = await client.health();
+        languageModelAvailable = health.language_model_available;
+        webDiscoveryAvailable = health.web_discovery_available;
+      } catch { languageModelAvailable = false; webDiscoveryAvailable = false; }
+    }
     configureMode();
-    bindEvents();
     resetChat();
     applied = readFilters();
     await Promise.allSettled([loadFacets(), loadRecipes()]);
   } catch (error) {
-    $("mode-badge").textContent = "Configuration error";
-    $("result-count").textContent = "Setup required";
-    $("results").replaceChildren(statePanel("Check the website configuration.", error.message));
+    startupError = error;
+    $("mode-badge").textContent = t("modeError");
+    $("result-count").textContent = t("setupRequired");
+    $("results").replaceChildren(statePanel(t("configCheck"), error.message));
     $("chat-status").textContent = error.message;
     document.querySelectorAll("form input, form button, form select").forEach(node => { node.disabled = true; });
   }
