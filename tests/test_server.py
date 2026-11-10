@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import Mock, patch
 
 from recipehub.knowledge_base import KnowledgeBase
+from recipehub.gemini import RecipeTranslator
 from recipehub.server import RecipeServer
 from tests.helpers import offline_settings, sample_recipe
 
@@ -50,6 +52,17 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request("/api/v1/recipes/test-pasta")[2]["source_url"], sample_recipe()["source_url"])
         self.assertEqual(self.request("/api/v1/recipes/missing")[0], 404)
         self.assertEqual(self.request("/api/v1/recipes?exclude_ingredients=wheat&exclude_ingredients=peanut")[2]["total"], 0)
+
+    def test_invalid_model_translation_keeps_collection_and_detail_available(self):
+        client = Mock(available=True)
+        client.generate.return_value = "[]"
+        translator = RecipeTranslator(offline_settings(self.temp.name), client)
+        with patch.object(self.server, "translator", translator):
+            for route in ("/api/v1/recipes", "/api/v1/recipes/test-pasta"):
+                with self.subTest(route=route):
+                    status, _, data = self.request(route, headers={"Accept-Language": "vi"})
+                    self.assertEqual(status, 200)
+                    self.assertFalse(data["content_translated"])
 
     def test_invalid_queries_and_chat_payloads_have_json_errors(self):
         for suffix in ("page=0", "page_size=101", "require_allergens=maybe", "sort=invalid", "country=a&country=b", "unexpected=x"):

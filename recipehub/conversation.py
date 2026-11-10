@@ -10,9 +10,11 @@ from typing import Any
 
 from recipehub.config import Settings
 from recipehub.gemini import GeminiClient, GeminiUnavailable
+from recipehub.ingestion_lock import ingestion_lock
 from recipehub.knowledge_base import KnowledgeBase, fold, parse_filters, query_tokens
 from recipehub.normalize import NormalizationPipeline
 from recipehub.recipe_crawler import RecipeCrawler
+from recipehub.seed import seed_path
 
 
 SESSION_TTL_SECONDS = 3600
@@ -28,11 +30,10 @@ REGION_ALIASES = (
 )
 STOP_WORDS = set("a an the i me my we us you your please can could would should do does did to of for from in on at by some any with and or that this these those it its them their find search show suggest recommend recipe recipes dish dishes meal meals cook cooking make something want like need what which how are is have has goes into about tell try list ingredients ingredient steps step instructions instruction method preparation source sources provenance attribution time minutes minute min under within less than up total takes take difficulty easy hard nutrition calories calorie allergens allergen substitutions substitution substitute replace alternatives alternative instead tools equipment tips tip explain".split())
 STOP_WORDS.update("toi minh ban muon lam mon an tim co hay giup nha nau trong la gi cua nao the".split())
-# Words that only occur in Vietnamese. Dish names English speakers also type ("pho", "bun") are left out.
+# Words that only occur in Vietnamese; dish names English speakers also type ("pho", "bun", "bo") are left out.
 VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich canh gi nao bi ung thay".split())
-# Words that show the user wants recipes even when no dish or ingredient is named ("find recipes").
+TIME_LIMIT = re.compile(r"(?:under|within|in|less than|up to|duoi|trong vong|trong|khong qua|toi da)\s+(\d{1,5})\s*(?:min(?:ute)?s?|phut)\b")
 PLAIN_TEXT = "Write plain text for a chat bubble: no Markdown, no asterisks, no headings; use simple line breaks and '•' for lists."
-RECIPE_REQUEST = re.compile(r"\b(recipes?|dish(es)?|meals?|suggest|recommend|find|search|show|tim|goi y|mon an|mon)\b")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -109,7 +110,7 @@ class ConversationService:
             return "source"
         if re.search(r"how long|\b(timing|time|duration)\b|bao lau|thoi gian", question):
             return "time"
-        if re.search(r"\b(difficulty|difficult|easy|hard)\b|do kho", question):
+        if re.search(r"\b(difficulty|difficult|easy|hard)\b|do kho|đo kho", question):
             return "difficulty"
         if re.search(r"\b(tool|tools|equipment)\b", question):
             return "tools"
@@ -120,6 +121,7 @@ class ConversationService:
     def _retrieve(self, question: str, preferences: dict[str, Any], search_query: str = "") -> list[dict[str, Any]]:
         filters = {**preferences, "q": ""}
         remainder = question
+        region_matched = False
         facets = self.store.facets()
         for region in sorted(facets["countries"], key=len, reverse=True):
             aliases = {fold(region)}
@@ -133,9 +135,10 @@ class ConversationService:
                 if preferences["country"] and preferences["country"] != region:
                     return []
                 filters["country"] = region
+                region_matched = True
                 remainder = re.sub(r"(?<!\w)" + re.escape(match) + r"(?!\w)", " ", remainder)
                 break
-        max_time = re.search(r"(?:under|within|in|less than|up to|duoi|trong vong|trong|khong qua|toi da)\s+(\d{1,5})\s*(?:min(?:ute)?s?|phut)\b", remainder)
+        max_time = TIME_LIMIT.search(remainder)
         if max_time:
             minutes = int(max_time[1])
             filters["max_minutes"] = min(minutes, preferences["max_minutes"]) if preferences["max_minutes"] is not None else minutes
@@ -149,9 +152,14 @@ class ConversationService:
         terms = [word for word in query_tokens(remainder) if word not in STOP_WORDS]
         if not terms and search_query:
             terms = [word for word in query_tokens(search_query) if word not in STOP_WORDS]
-        narrowed = any(filters[key] for key in ("country", "category", "difficulty", "ingredient", "exclude_ingredients", "require_allergens")) or filters["max_minutes"] is not None
-        if not terms and not narrowed and not RECIPE_REQUEST.search(question):
-            # Small talk such as "How are you?" is not a request to list the first recipes.
+        # Removing conversational filler must not turn a greeting into a search
+        # for every recipe. Empty queries are useful only for explicit recipe
+        # requests or a region/time mentioned in the question itself.
+        recipe_request = bool(re.search(
+            r"\b(recipe|recipes|dish|dishes|meal|meals|cook|cooking|make|find|search|suggest|recommend|mon|nau|tim)\b",
+            question,
+        ))
+        if not terms and not (recipe_request or max_time or region_matched):
             return []
         # Keep within the search API's 200-character limit for long chat messages.
         filters["q"] = " ".join(terms)[:200]
@@ -193,11 +201,14 @@ class ConversationService:
             pages = self.gemini.search_recipe_pages(query, language, exclusions)
             if not pages:
                 return False, "no_search_results", None
-            saved = self.crawler.collect_discovered_recipe_pages(pages)
-            if not saved:
-                return False, "no_recipe_jsonld", None
-            normalized = NormalizationPipeline(self.settings).run()
-            imported = self.store.import_processed(self.settings.processed_dir)
+            # Share the same process/thread lock as the CLI scheduler. Publish
+            # the raw data, normalized manifest, and SQLite update together.
+            with ingestion_lock(self.settings.processed_dir):
+                saved = self.crawler.collect_discovered_recipe_pages(pages)
+                if not saved:
+                    return False, "no_recipe_jsonld", None
+                normalized = NormalizationPipeline(self.settings).run()
+                imported = self.store.import_processed(self.settings.processed_dir, seed_file=seed_path(self.settings))
             indexed_count = imported.get("inserted", 0) + imported.get("updated", 0) + imported.get("unchanged", 0)
             LOGGER.info("Recipe discovery saved %s page(s); normalized %s and indexed %s recipe(s)", saved, normalized.get("processed", 0), indexed_count)
             success = True
@@ -342,9 +353,7 @@ class ConversationService:
             extra = [item.strip()[:100] for item in re.split(r",|\band\b|\bor\b|\bva\b|\bhoac\b", negative[1]) if item.strip()]
             context["exclusions"] = list(dict.fromkeys([*context.get("exclusions", []), *extra]))[:20]
             question = question[:negative.start()] + " " + question[negative.end():]
-        merged = list(dict.fromkeys([*preferences["exclude_ingredients"], *context.get("exclusions", [])]))[:40]
-        # Re-parse so chat exclusions also get their English names ("sua" -> "milk").
-        preferences["exclude_ingredients"] = parse_filters({"exclude_ingredients": merged})["exclude_ingredients"][:40]
+        preferences["exclude_ingredients"] = list(dict.fromkeys([*preferences["exclude_ingredients"], *context.get("exclusions", [])]))[:20]
         intent = self._intent(question)
         follow_up = (
             bool(re.search(r"\b(it|its|this|that|them|their|those|these)\b", question))
@@ -352,8 +361,10 @@ class ConversationService:
             or (language == "vi" and bool(re.search(r"\b(no|nay|do|ay|chung)\b", question)))
             or (intent != "discover" and not [word for word in query_tokens(question) if word not in STOP_WORDS])
         )
-        if follow_up and self.store.named_in(question, preferences):
-            # "How do I cook Ginger Rice? Is it easy?" names a dish, so "it" is that dish, not the previous one.
+        # A named dish takes precedence over pronouns elsewhere in the same
+        # message. Check names without preferences first, so an excluded named
+        # dish cannot accidentally fall back to the previous eligible recipe.
+        if self.store.named_in(question, {}):
             follow_up = False
         has_context = bool(context.get("record_ids"))
         history = context.get("history", [])
@@ -388,25 +399,27 @@ class ConversationService:
                 if language == "vi" else
                 "The previous recipe no longer matches your current exclusions, so I will not answer about it. Ask about another dish."
             )
-        elif not records and not follow_up and not RECIPE_REQUEST.search(question) and not [word for word in query_tokens(question) if word not in STOP_WORDS]:
-            # Small talk ("How are you?") without Gemini: no dish was asked for, so do not say "not in the collection".
-            text = (
-                "Mình là trợ lý nấu ăn. Hãy hỏi về một món ăn, nguyên liệu hoặc vùng miền nhé, ví dụ: “Tìm món có cà chua”."
-                if language == "vi" else
-                "I'm a kitchen assistant. Ask about a dish, an ingredient, or a region, for example “Find recipes with tomato”."
-            )
         elif not records and follow_up and not has_context:
             text = (
                 "Bạn đang hỏi về món nào? Hãy cho mình biết tên món trước nhé."
                 if language == "vi" else
                 "Which dish do you mean? Tell me the dish name first."
             )
+        elif not records and re.fullmatch(
+            r"(?:hi|hello|hey|how are you|thanks|thank you|xin chao|chao ban|cam on)[\s.!?,]*",
+            question,
+        ):
+            text = (
+                "Chào bạn! Mình có thể giúp tìm món, nguyên liệu và cách nấu trong bộ sưu tập. Bạn muốn nấu món gì?"
+                if language == "vi" else
+                "Hello! I can help find dishes, ingredients, and cooking steps in the collection. What would you like to cook?"
+            )
         elif not records:
             if discovery_state == "gemini_error" and discovery_status == 429:
                 text = (
-                    "Mình chưa tìm được công thức vì Gemini trả lỗi 429 (đang bị giới hạn hoặc hết hạn mức). Hãy kiểm tra hạn mức API rồi thử lại."
+                    "Mình chưa tìm thêm trên web được vì Gemini đang hết lượt dùng (lỗi 429). Hãy thử lại sau ít phút."
                     if language == "vi" else
-                    "Gemini returned HTTP 429, so I could not complete the web search. Check the API quota or rate limit, then try again."
+                    "I could not search the web because Gemini is out of quota for now (HTTP 429). Try again in a few minutes."
                 )
             elif discovery_state == "gemini_error":
                 if discovery_status:
@@ -451,6 +464,15 @@ class ConversationService:
                     if language == "vi" else
                     "I could not find a matching recipe in the collection or on the web. Try another dish name or relax the filters."
                 )
+            time_limit = TIME_LIMIT.search(question)
+            if time_limit and discovery_state in {"gemini_error", "not_configured", "not_attempted"}:
+                # Most sources (TheMealDB) publish no cooking time, so time-only questions rarely match.
+                local = (
+                    f"Chưa có món nào trong bộ sưu tập ghi tổng thời gian nấu tối đa {time_limit[1]} phút. Nhiều nguồn (như TheMealDB) không ghi thời gian nấu, nên bộ lọc thời gian thường không có kết quả."
+                    if language == "vi" else
+                    f"No recipe in the collection lists a total time of {time_limit[1]} minutes or less. Many sources (such as TheMealDB) publish no cooking time."
+                )
+                text = local if discovery_state != "gemini_error" else local + "\n\n" + text
         else:
             if intent != "discover":
                 records = records[:1]

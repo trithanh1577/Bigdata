@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import threading
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -13,10 +12,9 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from recipehub.config import Settings
+from recipehub.ingestion_lock import ingestion_lock
 from recipehub.models import Ingredient, RecipeRecord, validate_recipe
-from recipehub.text import clean_text, normalize_text, sha256_text, stable_id, write_text_atomic
-
-_RUN_LOCK = threading.Lock()
+from recipehub.text import clean_text, normalize_text, sha256_text, stable_id
 
 
 UNIT_ALIASES = {
@@ -487,11 +485,10 @@ class NormalizationPipeline:
         self.settings = settings or Settings()
 
     def run(self) -> dict[str, Any]:
-        # Chat discoveries run in server threads; one normalization at a time per process.
-        with _RUN_LOCK:
-            return self._run()
+        with ingestion_lock(self.settings.processed_dir):
+            return self._run_locked()
 
-    def _run(self) -> dict[str, Any]:
+    def _run_locked(self) -> dict[str, Any]:
         raw_files = sorted(self.settings.raw_dir.glob("*/runs/*/records/*.json"))
         processed_root = self.settings.processed_dir / "recipes"
         processed_root.mkdir(parents=True, exist_ok=True)
@@ -528,7 +525,9 @@ class NormalizationPipeline:
             source_id = str(envelope["source_id"])
             target = processed_root / source_id / f"{record.record_id}.json"
             target.parent.mkdir(parents=True, exist_ok=True)
-            write_text_atomic(target, json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(json.dumps(record.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(target)
             report["processed"] += 1
             report["processed_files"].append(target.relative_to(self.settings.processed_dir).as_posix())
             report["sources"][record.source_name] = report["sources"].get(record.source_name, 0) + 1
@@ -541,5 +540,8 @@ class NormalizationPipeline:
             {"group_key": key, "record_ids": ids}
             for key, ids in sorted(seen.items()) if len(ids) > 1
         ]
-        write_text_atomic(self.settings.processed_dir / "quality_report.json", json.dumps(report, ensure_ascii=False, indent=2))
+        report_path = self.settings.processed_dir / "quality_report.json"
+        temporary = report_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(report_path)
         return report

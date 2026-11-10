@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from concurrent.futures import ThreadPoolExecutor
 
 from recipehub.config import Settings
 from recipehub.normalize import NormalizationPipeline
+from recipehub import cli
 from recipehub.recipe_crawler import RecipeCrawler
 from recipehub.knowledge_base import KnowledgeBase
 from recipehub.conversation import ConversationService
@@ -15,6 +18,46 @@ from tests.helpers import offline_settings
 
 
 class PipelineTests(unittest.TestCase):
+    def test_concurrent_normalization_and_indexing_preserves_complete_dataset(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = offline_settings(root)
+            raw = settings.raw_dir / "themealdb" / "runs" / "one" / "records" / "record.json"
+            raw.parent.mkdir(parents=True)
+            raw.write_text(json.dumps({
+                "source_id": "themealdb", "source_name": "Test provider", "source_record_id": "1",
+                "source_url": "https://provider.test/recipe", "source_license": "Test terms", "attribution": "Test provider",
+                "collected_at": "2026-11-09T04:00:00+00:00",
+                "payload": {"strMeal": "Tomato soup", "strIngredient1": "tomato", "strInstructions": "Cook tomatoes."},
+            }), encoding="utf-8")
+            store = KnowledgeBase(root / "recipes.sqlite3")
+
+            def normalize_and_index(_):
+                from recipehub.ingestion_lock import ingestion_lock
+                with ingestion_lock(settings.processed_dir):
+                    report = NormalizationPipeline(settings).run()
+                    imported = store.import_processed(settings.processed_dir)
+                    return report["processed"], imported["files"]
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                results = list(pool.map(normalize_and_index, range(8)))
+            self.assertEqual(results, [(1, 1)] * 8)
+            self.assertEqual(store.stats()["recipes"], 1)
+            self.assertEqual(len(list(settings.raw_dir.glob("*/runs/*/records/*.json"))), 1)
+            self.assertEqual(json.loads((settings.processed_dir / "quality_report.json").read_text(encoding="utf-8"))["processed"], 1)
+
+    def test_scheduler_retries_after_temporary_ingestion_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            settings = offline_settings(temp)
+            result = {"crawl": {"failed": 0}, "normalize": {"processed": 1, "invalid": []}, "index": {"files": 1}}
+            output = io.StringIO()
+            with patch("sys.argv", ["recipehub", "schedule", "--minutes", "5"]), patch.object(cli, "Settings", return_value=settings), patch.object(cli, "_run_pipeline", side_effect=[OSError("temporary disk issue"), result]) as pipeline, patch.object(cli.time, "sleep", side_effect=[None, KeyboardInterrupt]), patch("sys.stdout", output):
+                cli.main()
+            self.assertEqual(pipeline.call_count, 2)
+            self.assertIn("temporary disk issue", output.getvalue())
+            self.assertIn('"files": 1', output.getvalue())
+            self.assertIn("Scheduler stopped", output.getvalue())
+
     def test_latest_snapshot_compares_instants_across_timezones_and_manifest_hides_invalid_derivatives(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

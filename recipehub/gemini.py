@@ -240,7 +240,7 @@ class RecipeTranslator:
             elif value not in missing:
                 missing.append(value)
         if missing and time.monotonic() < self._paused_until:
-            # Gemini just failed; show source text now instead of waiting for another timeout.
+            # Gemini just failed (quota/network); show source text now instead of waiting for another timeout.
             return [result.get(value, value) for value in values], False
         succeeded = True
         for start in range(0, len(missing), 30):
@@ -256,8 +256,9 @@ class RecipeTranslator:
                 )
                 if response.startswith("```"):
                     response = response.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                translated = json.loads(response).get("translations")
-                if not isinstance(translated, list) or len(translated) != len(batch) or any(not isinstance(item, str) for item in translated):
+                payload = json.loads(response)
+                translated = payload.get("translations") if isinstance(payload, dict) else None
+                if not isinstance(translated, list) or len(translated) != len(batch) or any(not isinstance(item, str) or not item.strip() for item in translated):
                     raise ValueError("invalid translation response")
                 updates = {
                     hashlib.sha256(f"{language}\0{original}".encode("utf-8")).hexdigest(): localized
@@ -268,11 +269,10 @@ class RecipeTranslator:
                 with self._lock:
                     self._cache.update(updates)
                     self._save()
-            # AttributeError: valid JSON of the wrong shape, e.g. "[]" has no .get().
-            except (GeminiUnavailable, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
-                LOGGER.warning("Recipe translation failed (%s)", getattr(exc, "status_code", None) or type(exc).__name__)
+            except (GeminiUnavailable, ValueError, KeyError, IndexError, TypeError) as exc:
                 if isinstance(exc, GeminiUnavailable):
                     self._paused_until = time.monotonic() + TRANSLATION_PAUSE_SECONDS
+                LOGGER.warning("Recipe translation failed (%s)", getattr(exc, "status_code", None) or type(exc).__name__)
                 succeeded = False
                 break
         return [result.get(value, value) for value in values], succeeded

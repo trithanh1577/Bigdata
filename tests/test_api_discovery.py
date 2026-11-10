@@ -11,6 +11,7 @@ from recipehub.conversation import ConversationService
 from recipehub.gemini import GeminiClient, RecipeTranslator
 from recipehub.knowledge_base import KnowledgeBase
 from recipehub.recipe_crawler import RecipeCrawler
+from tests.helpers import sample_recipe
 
 
 def gemini_settings(root: Path, base_url: str = "https://generativelanguage.googleapis.com/v1beta") -> Settings:
@@ -30,6 +31,30 @@ def gemini_reply(text: str) -> Mock:
 
 
 class RecipeDiscoveryTests(unittest.TestCase):
+    def test_invalid_translation_structure_falls_back_without_poisoning_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = gemini_settings(Path(temp_dir))
+            translator = RecipeTranslator(settings, GeminiClient(settings))
+            for response in ("[]", "null", "42", '"text"', '{}', '{"translations":[""]}', '{"translations":[1]}'):
+                with self.subTest(response=response), patch.object(translator.client, "generate", return_value=response):
+                    self.assertEqual(translator.translate(["Beef stew"], "vi"), (["Beef stew"], False))
+            with patch.object(translator.client, "generate", return_value='{"translations":["Bò kho"]}'):
+                self.assertEqual(translator.translate(["Beef stew"], "vi"), (["Bò kho"], True))
+
+    def test_greeting_with_existing_collection_uses_chat_instead_of_recipe_citations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = ConversationService(KnowledgeBase(root / "kb.sqlite3"), gemini_settings(root))
+            service.store.import_records([sample_recipe()])
+            replies = [json.dumps({"recipe_request": False, "query": ""}), "I'm here to help in the kitchen!"]
+            with patch.object(service.gemini, "generate", side_effect=replies) as generate, \
+                 patch.object(service.gemini, "search_recipe_pages") as search:
+                result = service.answer("How are you?")
+            self.assertEqual(result["answer"], "I'm here to help in the kitchen!")
+            self.assertEqual(result["citations"], [])
+            self.assertEqual(generate.call_count, 2)
+            search.assert_not_called()
+
     def test_translation_uses_native_gemini_endpoint_and_caches_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             # The legacy OpenAI-compatible base URL must still reach the native endpoint.

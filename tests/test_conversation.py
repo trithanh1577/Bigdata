@@ -15,7 +15,7 @@ class ConversationTests(unittest.TestCase):
         self.store = KnowledgeBase(Path(self.temp.name) / "recipes.sqlite3")
         self.first = sample_recipe()
         second = sample_recipe("test-rice", "Ginger Rice", "Japanese", 15)
-        second.update(ingredients=[{"name": "rice", "original_text": "1 cup rice"}], allergens=[], categories=["Rice"])
+        second.update(ingredients=[{"name": "rice", "original_text": "1 cup rice"}], allergens=[], categories=["Rice"], instructions=["Simmer the rice.", "Fold in ginger."])
         self.store.import_records([self.first, second])
         self.service = ConversationService(self.store, offline_settings(self.temp.name))
 
@@ -37,6 +37,41 @@ class ConversationTests(unittest.TestCase):
         answer = self.service.answer("What are its ingredients?", {"exclude_ingredients": ["wheat"]}, first["session_id"])
         self.assertEqual(answer["citations"], [])
         self.assertNotIn("180 g pasta", answer["answer"])
+
+    def test_explicit_dish_overrides_pronouns_and_previous_recipe(self):
+        first = self.service.answer("Find Tomato Pasta")
+        result = self.service.answer("How do I cook Ginger Rice? Is it easy?", session_id=first["session_id"])
+        self.assertEqual([item["record_id"] for item in result["citations"]], ["test-rice"])
+        self.assertIn("1. Simmer the rice.", result["answer"])
+        self.assertNotIn("Cook the pasta.", result["answer"])
+        self.assertTrue(result["answer"].startswith("Ginger Rice"))
+
+        excluded = self.service.answer(
+            "How do I cook Tomato Pasta? Is it easy?",
+            {"exclude_ingredients": ["wheat"]}, result["session_id"],
+        )
+        self.assertEqual(excluded["citations"], [])
+        self.assertNotIn("180 g pasta", excluded["answer"])
+
+    def test_greetings_do_not_return_arbitrary_collection_records(self):
+        for question in ("How are you?", "Hello!", "Xin chào"):
+            with self.subTest(question=question):
+                result = self.service.answer(question)
+                self.assertEqual(result["citations"], [])
+                self.assertNotIn("Tomato Pasta", result["answer"])
+                self.assertNotIn("not in the collection", result["answer"])
+        self.assertTrue(self.service.answer("Find recipes")["citations"])
+
+    def test_vietnamese_allergy_excludes_english_ingredients_and_persists(self):
+        milk = sample_recipe("milk-pudding", "Milk Pudding")
+        milk.update(ingredients=[{"name": "milk", "original_text": "1 cup milk"}], allergens=["milk"])
+        self.store.import_records([milk])
+        first = self.service.answer("Tìm món, tôi dị ứng với sữa")
+        self.assertTrue(first["citations"])
+        self.assertNotIn("milk-pudding", [item["record_id"] for item in first["citations"]])
+        next_turn = self.service.answer("Find Milk Pudding", session_id=first["session_id"])
+        self.assertEqual(next_turn["citations"], [])
+        self.assertEqual(self.service.answer("Find Milk Pudding")["citations"][0]["record_id"], "milk-pudding")
 
     def test_missing_data_is_not_invented_and_allergens_do_not_imply_safety(self):
         first = self.service.answer("Find Italian recipes")

@@ -47,3 +47,19 @@
 **Reason:** Person 4 can deliver and demonstrate the interface before Person 3's backend exists. A static website works with the repository's existing Python tooling and requires no frontend build service. Separating the HTTP adapter keeps future integration changes out of the rendering layer.
 
 **Trade-off:** The backend uses deterministic retrieval by default and can optionally call Gemini through Google's native `generateContent` API using a server-side `.env` key. It can translate recipe content for the selected interface language and use Google Search grounding to discover pages that publish Schema.org Recipe JSON-LD. Raw snapshots, normalized records, crawl state, translation cache, conversation context, and the SQLite knowledge base are stored on disk. Dietary exclusions are text matches with incomplete source data. The proof of concept has no authentication or public hosting.
+
+## ADR-008: Serialize data lake updates across threads and processes
+
+**Decision:** Use a reentrant thread lock together with an operating-system file lock at `data/processed/.ingestion.lock`. CLI pipeline/scheduler and on-demand discovery hold the same lock across collection, normalization, and SQLite import. Individual stages also acquire it so standalone commands use the same coordination. Reading the processed manifest and importing its records share that lock.
+
+**Reason:** A scheduler and multiple chat requests can update the same data lake. Serializing writers prevents collisions on temporary filenames and prevents a manifest from changing while it is being imported. Existing raw snapshots and the SQLite schema remain compatible.
+
+**Trade-off:** An ingestion operation waits for another writer to finish. Website searches continue reading the previously committed SQLite records. The scheduler reports expected storage errors and retries at its next interval; it still requires the computer and process to stay running.
+
+## ADR-009: Ship a portable recipe snapshot for deployments
+
+**Decision:** Export indexed source records to the versioned JSON bundle `seed/recipes.json`. On startup, import this bundle into SQLite before serving requests. Seed-aware pipeline imports merge the bundle, processed records, and existing recipes by provider record ID, preferring the newest collection timestamp and then processing timestamp. Without a bundle, the existing processed-manifest synchronization behavior remains available.
+
+**Reason:** Local SQLite files and raw crawl state are ignored by Git. A fresh deployment needs a portable source-backed collection that can be restored without crawling on every startup. Export reads only recipe payloads; conversations, environment settings, and translation caches stay local. Validation completes before database import or atomic bundle replacement.
+
+**Trade-off:** GitHub receives a snapshot when the operator runs `export-seed` and publishes it. New recipes collected on an ephemeral hosted filesystem still need persistent storage or a separate export workflow; startup restores only the bundle included in that deployment. This does not run the local scheduler on Render or publish any changes automatically.

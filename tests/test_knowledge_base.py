@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from recipehub.knowledge_base import KnowledgeBase, parse_filters
+from recipehub.text import normalize_recipe_query
 from tests.helpers import sample_recipe
 
 
@@ -26,6 +27,63 @@ class KnowledgeBaseTests(unittest.TestCase):
         self.assertEqual(self.store.search({"q": '" OR * NOT ('})["total"], 0)
         self.assertEqual(self.store.search({"q": "---"})["total"], 0)
         self.assertEqual(self.store.stats()["recipes"], 2)
+
+    def test_bilingual_search_preserves_source_titles_and_combines_terms(self):
+        vietnamese = sample_recipe("vietnamese-rice", "Cơm cà chua", "Vietnamese")
+        vietnamese.update(language="vi", description="", categories=["Món chính"], ingredients=[
+            {"name": "cà chua", "original_text": "2 quả cà chua"},
+            {"name": "gạo", "original_text": "1 bát gạo"},
+        ])
+        stew = sample_recipe("bo-kho", "Bò kho", "Vietnamese")
+        stew.update(description="", categories=["Stew"], ingredients=[{"name": "beef", "original_text": "500 g beef"}])
+        self.store.import_records([vietnamese, stew])
+        self.assertEqual({item["record_id"] for item in self.store.search({"q": "cà chua"})["items"]},
+                         {"test-pasta", "test-soup", "vietnamese-rice"})
+        self.assertEqual(self.store.search({"q": "rice tomato"})["items"][0]["record_id"], "vietnamese-rice")
+        self.assertEqual(self.store.search({"q": "mì Ý"})["items"][0]["record_id"], "test-pasta")
+        self.assertEqual(self.store.search({"q": "bo kho"})["items"][0]["record_id"], "bo-kho")
+        self.assertEqual(self.store.search({"ingredient": "cà chua"})["total"], 2)
+        self.assertEqual([item["original_text"] for item in self.store.recipe("vietnamese-rice")["ingredients"]],
+                         [item["original_text"] for item in vietnamese["ingredients"]])
+        self.assertEqual(normalize_recipe_query("mì Ý cá hồi"), "pasta salmon")
+        self.assertEqual(normalize_recipe_query("trứng gà hải sản ớt chanh"), "egg seafood chili lime")
+
+    def test_bilingual_exclusions_filter_ingredients_and_declared_allergens(self):
+        milk = sample_recipe("milk-pudding", "Milk Pudding")
+        milk.update(ingredients=[{"name": "milk", "original_text": "200 ml milk"}], allergens=["milk"])
+        vietnamese = sample_recipe("vietnamese-milk", "Sữa nóng", "Vietnamese")
+        vietnamese.update(language="vi", ingredients=[{"name": "sữa", "original_text": "1 ly sữa"}], allergens=[])
+        peanut = sample_recipe("peanut-sauce", "Sốt đậu phộng", "Vietnamese")
+        peanut.update(language="vi", ingredients=[{"name": "đậu phộng", "original_text": "50 g đậu phộng"}], allergens=[])
+        milkshake = sample_recipe("milkshake", "Milkshake")
+        milkshake.update(ingredients=[{"name": "milkshake", "original_text": "1 cup milkshake"}], allergens=[])
+        self.store.import_records([milk, vietnamese, peanut, milkshake])
+        for term in ("milk", "sữa", "sua"):
+            with self.subTest(term=term):
+                ids = {item["record_id"] for item in self.store.search({"exclude_ingredients": [term]})["items"]}
+                self.assertNotIn("milk-pudding", ids)
+                self.assertNotIn("vietnamese-milk", ids)
+                self.assertNotIn("milkshake", ids)
+                self.assertIn("test-pasta", ids)
+                self.assertEqual(self.store.eligible(["milk-pudding", "vietnamese-milk"], {"exclude_ingredients": [term]}), [])
+        for term in ("peanut", "đậu phộng", "dau phong", "lạc"):
+            with self.subTest(term=term):
+                ids = {item["record_id"] for item in self.store.search({"exclude_ingredients": [term]})["items"]}
+                self.assertNotIn("peanut-sauce", ids)
+                self.assertNotIn("test-soup", ids)
+        self.assertEqual(self.store.search({"q": "peanut sauce"})["items"][0]["record_id"], "peanut-sauce")
+
+    def test_short_exclusion_aliases_do_not_match_inside_unrelated_words(self):
+        pepper = sample_recipe("pepper", "Pepper Bowl")
+        pepper.update(ingredients=[{"name": "black pepper", "original_text": "black pepper"}], allergens=[])
+        cashew = sample_recipe("cashew", "Cashew Bowl")
+        cashew.update(ingredients=[{"name": "cashew", "original_text": "cashew"}], allergens=[])
+        self.store.import_records([pepper, cashew])
+        for exclusion in ("peanut", "lạc", "fish", "cá"):
+            with self.subTest(exclusion=exclusion):
+                ids = {item["record_id"] for item in self.store.search({"exclude_ingredients": [exclusion]})["items"]}
+                self.assertIn("pepper", ids)
+                self.assertIn("cashew", ids)
 
     def test_exact_filters_combine_with_exclusions_and_unknown_values(self):
         self.assertEqual(self.store.search({"country": "Italian", "category": "Pasta", "difficulty": "Easy", "ingredient": "tomato"})["total"], 1)
