@@ -19,6 +19,9 @@ from recipehub.config import Settings
 
 LOGGER = logging.getLogger(__name__)
 TRANSLATION_PAUSE_SECONDS = 60
+# Google returns these when the model is briefly overloaded; one quick retry usually succeeds.
+TEMPORARY_STATUSES = {500, 502, 503, 504}
+RETRY_DELAY_SECONDS = 2.0
 
 
 class GeminiUnavailable(RuntimeError):
@@ -62,15 +65,21 @@ class GeminiClient:
         base = self.settings.llm_api_base_url.rstrip("/").removesuffix("/openai")
         endpoint = f"{base}/models/{model}:generateContent"
         try:
-            response = requests.post(
-                endpoint,
-                headers={
-                    "x-goog-api-key": self.settings.llm_api_key,
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self.settings.llm_timeout_seconds,
-            )
+            for attempt in range(2):
+                response = requests.post(
+                    endpoint,
+                    headers={
+                        "x-goog-api-key": self.settings.llm_api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=self.settings.llm_timeout_seconds,
+                )
+                if attempt == 0 and response.status_code in TEMPORARY_STATUSES:
+                    LOGGER.warning("Gemini returned HTTP %s; retrying once", response.status_code)
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                break
             response.raise_for_status()
             result = response.json()
             if not isinstance(result, dict):

@@ -5,6 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -61,6 +62,21 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(answer["citations"], [])
         self.assertIn("không ghi thời gian nấu", answer["answer"])
         self.assertIn("429", answer["answer"])
+
+    def test_gemini_overload_is_not_blamed_on_the_api_key(self):
+        service = ConversationService(self.store, gemini_settings(self.root))
+        with patch.object(service.gemini, "generate", side_effect=GeminiUnavailable(503)):
+            answer = service.answer("Tìm món dưới 30 phút", language="vi")["answer"]
+        self.assertIn("quá tải tạm thời", answer)
+        self.assertNotIn("khóa API", answer)
+
+    def test_gemini_request_is_retried_once_after_overload(self):
+        client = GeminiClient(gemini_settings(self.root))
+        busy, ok = unittest.mock.Mock(status_code=503), unittest.mock.Mock(status_code=200)
+        ok.json.return_value = {"candidates": [{"content": {"parts": [{"text": "Xin chào"}]}}]}
+        with patch("recipehub.gemini.requests.post", side_effect=[busy, ok]) as post, patch("recipehub.gemini.time.sleep"):
+            self.assertEqual(client.generate("", "hi"), "Xin chào")
+        self.assertEqual(post.call_count, 2)
 
 
 class TranslatorTests(unittest.TestCase):
