@@ -30,7 +30,7 @@ export function createClient(config = {}, fetchImpl = globalThis.fetch, language
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
       const response = await fetchImpl(`${baseUrl}${path}`, { ...options, signal: controller.signal, headers: { Accept: "application/json", "Accept-Language": getLanguage(), ...(options.body ? { "Content-Type": "application/json" } : {}) } });
-      if (!response.ok) throw new Error(tr("apiHttp", { status: response.status }));
+      if (!response.ok) throw Object.assign(new Error(tr("apiHttp", { status: response.status })), { status: response.status });
       return await response.json();
     } catch (error) {
       if (error.name === "AbortError") throw new Error(tr("apiTimeout"));

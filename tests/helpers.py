@@ -19,3 +19,11 @@ def sample_recipe(record_id="test-pasta", title="Tomato Pasta", region="Italian"
         content_hash="test-content-hash", duplicate_group_key="test-duplicate-key",
         metadata={"synthetic": True},
     ).to_dict()
+
+
+def offline_settings(root):
+    """Keep tests off the developer's real .env Gemini key and data folders."""
+    from pathlib import Path
+    from recipehub.config import Settings
+    root = Path(root)
+    return Settings(project_root=root, raw_dir=root / "raw", processed_dir=root / "processed", state_dir=root / "state", llm_api_key="")

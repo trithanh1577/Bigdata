@@ -1,6 +1,6 @@
 import { createClient } from "./api.js";
 import { hasMinutes, parseExclusions, safeUrl, timeLabel } from "./domain.js";
-import { applyStaticTranslations, currentLanguage, initializeLanguage, setLanguage, t } from "./i18n.js";
+import { applyStaticTranslations, currentLanguage, initializeLanguage, setLanguage, t, valueLabel } from "./i18n.js";
 
 const $ = id => document.getElementById(id);
 let language = initializeLanguage();
@@ -48,9 +48,6 @@ let webDiscoveryAvailable = false;
 function applyLanguage() {
   language = currentLanguage();
   applyStaticTranslations();
-  for (const node of document.querySelectorAll("[data-question-en][data-question-vi]")) {
-    node.dataset.question = language === "vi" ? node.dataset.questionVi : node.dataset.questionEn;
-  }
   if (!client) {
     if (startupError) {
       try { createClient(window.RECIPEHUB_CONFIG, globalThis.fetch, currentLanguage); }
@@ -87,8 +84,8 @@ function statePanel(title, message, retry) {
 }
 
 function renderChips() {
-  const values = [applied.q && t("searchChip", { value: applied.q }), applied.country, applied.category,
-    applied.max_minutes && t("timeChip", { value: applied.max_minutes }), applied.difficulty,
+  const values = [applied.q && t("searchChip", { value: applied.q }), valueLabel(applied.country), valueLabel(applied.category),
+    applied.max_minutes && t("timeChip", { value: applied.max_minutes }), valueLabel(applied.difficulty),
     ...(applied.exclude_ingredients ?? []).map(value => t("avoidChip", { value })),
     applied.require_allergens && t("allergensChip")].filter(Boolean);
   $("active-filters").replaceChildren(...values.map(value => element("span", "filter-chip", value)));
@@ -120,10 +117,10 @@ function recipeCard(recipe, index) {
   const card = element("article", "recipe-card");
   card.append(recipeVisual(recipe, index));
   const body = element("div", "recipe-body");
-  body.append(element("p", "recipe-country", recipe.country_or_region || t("regionUnknown")), element("h3", "", recipe.title),
+  body.append(element("p", "recipe-country", valueLabel(recipe.country_or_region) || t("regionUnknown")), element("h3", "", recipe.title),
     element("p", "recipe-summary", recipe.description || t("recipeTeaser")));
   const meta = element("div", "recipe-meta");
-  meta.append(element("span", "", `◷ ${timeLabel(recipe.total_minutes, language)}`), element("span", "", recipe.difficulty || t("difficultyUnknown")));
+  meta.append(element("span", "", `◷ ${timeLabel(recipe.total_minutes, language)}`), element("span", "", valueLabel(recipe.difficulty) || t("difficultyUnknown")));
   body.append(meta, element("p", "recipe-source", `${t("sourceLabel")}: ${recipe.source_name || t("sourceUnknown")}`), button(t("viewRecipe"), "recipe-link", () => openRecipe(recipe.record_id)));
   card.append(body);
   return card;
@@ -167,7 +164,8 @@ async function loadFacets() {
       const select = $(id);
       const current = select.value;
       const labels = facets.labels?.[key] ?? {};
-      const options = [new Option(t(fallbackKey), ""), ...facets[key].map(value => new Option(labels[value] || value, value))];
+      const label = value => (labels[value] && labels[value] !== value ? labels[value] : valueLabel(value));
+      const options = [new Option(t(fallbackKey), ""), ...facets[key].map(value => new Option(label(value), value))];
       select.replaceChildren(...options);
       select.value = current;
     }
@@ -205,7 +203,7 @@ function renderRecipe(recipe) {
     root.append(element("p", "translation-notice", t("translationNotice")));
   }
   const header = element("div", "detail-header");
-  header.append(element("p", "recipe-country", recipe.country_or_region || t("regionUnknown")));
+  header.append(element("p", "recipe-country", valueLabel(recipe.country_or_region) || t("regionUnknown")));
   const title = element("h2", "", recipe.title);
   title.id = "recipe-dialog-title";
   header.append(title, element("p", "", recipe.description || t("descriptionUnknown")));
@@ -222,7 +220,7 @@ function renderRecipe(recipe) {
     image.addEventListener("error", () => image.remove(), { once: true }); image.src = imageUrl; root.append(image);
   }
   const badges = element("div", "detail-badges");
-  const values = [timeLabel(recipe.total_minutes, language), recipe.difficulty || t("difficultyUnknown"), recipe.servings ? t("servings", { value: recipe.servings }) : t("servingsUnknown"), ...recipe.categories];
+  const values = [timeLabel(recipe.total_minutes, language), valueLabel(recipe.difficulty) || t("difficultyUnknown"), recipe.servings ? t("servings", { value: recipe.servings }) : t("servingsUnknown"), ...recipe.categories.map(item => valueLabel(item))];
   if (hasMinutes(recipe.prep_minutes)) values.push(t("prep", { value: recipe.prep_minutes }));
   if (hasMinutes(recipe.cook_minutes)) values.push(t("cook", { value: recipe.cook_minutes }));
   badges.append(...values.map(value => element("span", "", value)));
@@ -331,7 +329,15 @@ async function sendQuestion(question) {
   $("chat-input").value = "";
   setChatBusy(true);
   try {
-    const response = await client.chat({ message, filters: applied, session_id: sessionId, history, previousIds, language });
+    let response;
+    try {
+      response = await client.chat({ message, filters: applied, session_id: sessionId, history, previousIds, language });
+    } catch (error) {
+      // The server forgets idle conversations after an hour; start a fresh one instead of failing forever.
+      if (error.status !== 404 || !sessionId) throw error;
+      sessionId = null; previousIds = [];
+      response = await client.chat({ message, filters: applied, session_id: null, history: [], previousIds, language });
+    }
     if (version !== chatVersion) return;
     appendMessage("assistant", response.answer, response.citations, false, true);
     sessionId = response.session_id;
@@ -386,7 +392,10 @@ function bindEvents() {
     });
   }
   $("chat-form").addEventListener("submit", event => { event.preventDefault(); sendQuestion($("chat-input").value); });
-  $("chat-suggestions").addEventListener("click", event => { const node = event.target.closest("[data-question]"); if (node) sendQuestion(node.dataset.question); });
+  $("chat-suggestions").addEventListener("click", event => {
+    const node = event.target.closest("[data-question-en]");
+    if (node) sendQuestion(language === "vi" ? node.dataset.questionVi : node.dataset.questionEn);
+  });
   $("clear-chat").addEventListener("click", resetChat);
 }
 

@@ -177,7 +177,32 @@ const messages = {
   },
 };
 
+// Fixed Vietnamese labels for common source values (regions, dish types, difficulty),
+// so filters and cards read in Vietnamese even when Gemini translation is unavailable.
+const VALUE_LABELS_VI = {
+  italian: "Ý", italy: "Ý", japanese: "Nhật Bản", japan: "Nhật Bản", thai: "Thái Lan", thailand: "Thái Lan",
+  vietnamese: "Việt Nam", vietnam: "Việt Nam", chinese: "Trung Quốc", china: "Trung Quốc", korean: "Hàn Quốc", korea: "Hàn Quốc",
+  indian: "Ấn Độ", india: "Ấn Độ", mexican: "Mexico", mexico: "Mexico", french: "Pháp", france: "Pháp",
+  greek: "Hy Lạp", greece: "Hy Lạp", british: "Anh", "united kingdom": "Anh", canadian: "Canada", canada: "Canada",
+  american: "Mỹ", spanish: "Tây Ban Nha", nigerian: "Nigeria", nigeria: "Nigeria", indonesian: "Indonesia", indonesia: "Indonesia",
+  scottish: "Scotland", scotland: "Scotland", swedish: "Thụy Điển", sweden: "Thụy Điển", african: "Châu Phi", africa: "Châu Phi",
+  easy: "Dễ", medium: "Trung bình", moderate: "Trung bình", hard: "Khó", difficult: "Khó",
+  beef: "Thịt bò", chicken: "Thịt gà", pork: "Thịt heo", lamb: "Thịt cừu", goat: "Thịt dê", seafood: "Hải sản",
+  dessert: "Tráng miệng", desserts: "Tráng miệng", breakfast: "Bữa sáng", starter: "Khai vị", side: "Món phụ",
+  vegetarian: "Món chay", vegan: "Thuần chay", pasta: "Mì Ý", miscellaneous: "Món khác", "main course": "Món chính",
+  rice: "Cơm", salad: "Salad", noodles: "Mì / bún", soup: "Súp / canh", soups: "Súp / canh", drinks: "Đồ uống", bread: "Bánh mì",
+  // TheMealDB free-form tags ("Desert" is the provider's own spelling).
+  alcoholic: "Có cồn", baking: "Nướng bánh", cake: "Bánh ngọt", calorific: "Nhiều calo", desert: "Tráng miệng",
+  sweet: "Ngọt", spicy: "Cay", meat: "Thịt", fish: "Cá", curry: "Cà ri", stew: "Món hầm",
+  "street food": "Món đường phố", snack: "Ăn vặt", streetfood: "Món đường phố", mainmeal: "Món chính", speciality: "Đặc sản",
+};
+
 let activeLanguage = "en";
+
+export function valueLabel(value, language = activeLanguage) {
+  if (language !== "vi" || typeof value !== "string") return value;
+  return VALUE_LABELS_VI[value.trim().toLowerCase()] ?? value;
+}
 
 export function initializeLanguage() {
   try {

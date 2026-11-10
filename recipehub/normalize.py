@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,7 @@ KNOWN_COUNTRIES = (
     "Vietnamese", "Vietnam", "Thai", "Thailand", "Japanese", "Japan", "Korean", "Korea",
     "Italian", "Italy", "Mexican", "Mexico", "Indian", "India", "Chinese", "China",
     "French", "France", "Canadian", "Canada", "British", "United Kingdom", "Greek", "Greece",
+    "Nigerian", "Nigeria", "Indonesian", "Indonesia", "Scottish", "Scotland", "Swedish", "Sweden", "African", "Africa",
 )
 INGREDIENT_ALIASES = {
     "chicken breast": "chicken", "chicken thighs": "chicken", "chicken thigh": "chicken",
@@ -49,6 +51,8 @@ INGREDIENT_ALIASES = {
 def parse_minutes(value: object) -> int | None:
     text = clean_text(str(value or ""))
     if not text:
+        return None
+    if re.search(r"\d\s*(?:[-–—]|to)\s*\d|\b(?:about|approximately|overnight)\b", text, re.IGNORECASE):
         return None
     iso = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?", text, re.IGNORECASE)
     if iso:
@@ -75,6 +79,12 @@ def normalize_ingredient(original_text: str, source_name: str = "", amount: str 
     source_name = clean_text(source_name)
     parsed_amount = clean_text(amount)
     remainder = source_name or original_text
+    # Expand vulgar fractions only in the parsing copy. Original wording stays
+    # untouched; e.g. "1½ cups" becomes a mixed fraction, not "11/2 cups".
+    for fraction in "¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞":
+        expanded = unicodedata.normalize("NFKC", fraction).replace("⁄", "/")
+        remainder = re.sub(r"(?<=\d)" + fraction, " " + expanded, remainder)
+        remainder = remainder.replace(fraction, expanded)
     if not parsed_amount:
         match = AMOUNT_RE.match(remainder)
         if match:
@@ -139,7 +149,7 @@ def _split_instructions(value: object) -> list[str]:
 def _infer_country(*values: str) -> str:
     haystack = normalize_text(" ".join(values))
     for country in KNOWN_COUNTRIES:
-        if normalize_text(country) in haystack:
+        if re.search(r"(?<!\w)" + re.escape(normalize_text(country)) + r"(?!\w)", haystack):
             return country
     return ""
 
@@ -155,17 +165,23 @@ def _tag_list(value: object) -> list[str]:
 def _wikibooks_sections(raw_html: str) -> tuple[list[Ingredient], list[str], str]:
     soup = BeautifulSoup(raw_html, "html.parser")
     root = soup.select_one(".mw-parser-output") or soup
+    for unwanted in root.select(".mw-editsection, .reference, .navbox, .ombox, script, style"):
+        unwanted.decompose()
     ingredients: list[Ingredient] = []
     instructions: list[str] = []
     description = ""
     for paragraph in root.find_all("p", recursive=False):
+        if paragraph.find(id="displaytitle") or paragraph.find("a", href="/wiki/Cookbook:Table_of_Contents"):
+            continue
         text = clean_text(paragraph.get_text(" ", strip=True))
+        if re.match(r"^(?:Cookbook\s*\|\s*)?Recipes\s*\|\s*Ingredients\s*\|", text):
+            continue
         if len(text.split()) > 5:
             description = text
             break
     active_section = ""
     active_heading_level = 0
-    nodes = root.find_all(["h2", "h3", "h4", "li", "p"])
+    nodes = root.find_all(["h2", "h3", "h4", "li", "p", "tr"])
     for node in nodes:
         if node.name in {"h2", "h3", "h4"}:
             level = int(node.name[1])
@@ -173,7 +189,7 @@ def _wikibooks_sections(raw_html: str) -> tuple[list[Ingredient], list[str], str
                 active_section = ""
                 active_heading_level = 0
             heading_name = clean_text(node.get_text(" ", strip=True)).lower().replace("[edit]", "").strip()
-            is_ingredients = "ingredient" in heading_name or "what you need" in heading_name
+            is_ingredients = bool(re.match(r"^(?:(?:main|dry|wet|other)\s+)?(?:ingredients?|what you need)\b", heading_name))
             is_instructions = any(
                 key in heading_name
                 for key in ("direction", "method", "instruction", "preparation", "procedure", "steps")
@@ -186,7 +202,18 @@ def _wikibooks_sections(raw_html: str) -> tuple[list[Ingredient], list[str], str
                 active_heading_level = level
             continue
 
-        if active_section == "ingredients" and node.name == "li":
+        if active_section == "ingredients" and node.name == "tr":
+            cells = [clean_text(cell.get_text(" ", strip=True)) for cell in node.find_all("td", recursive=False)]
+            if not cells or not cells[0]:
+                continue
+            measures = [value for value in cells[1:] if value not in {"", "-", "–", "—", "�"}]
+            original = " | ".join(cells)
+            parsed = normalize_ingredient(f"{measures[0]} {cells[0]}" if measures else cells[0])
+            parsed.original_text = original
+            if len(measures) > 1:
+                parsed.notes = "Other source measures: " + "; ".join(measures[1:])
+            ingredients.append(parsed)
+        elif active_section == "ingredients" and node.name == "li" and not node.find_parent("td"):
             item = clean_text(node.get_text(" ", strip=True))
             if item:
                 ingredients.append(normalize_ingredient(item))
@@ -460,15 +487,21 @@ class NormalizationPipeline:
         raw_files = sorted(self.settings.raw_dir.glob("*/runs/*/records/*.json"))
         processed_root = self.settings.processed_dir / "recipes"
         processed_root.mkdir(parents=True, exist_ok=True)
-        report: dict[str, Any] = {"raw_records": len(raw_files), "processed": 0, "invalid": []}
+        report: dict[str, Any] = {"raw_records": len(raw_files), "processed": 0, "invalid": [], "processed_files": [], "sources": {}, "missing_fields": {}}
         seen: dict[str, list[str]] = defaultdict(list)
 
-        latest: dict[tuple[str, str], tuple[str, Path, dict[str, Any]]] = {}
+        latest: dict[tuple[str, str], tuple[datetime, Path, dict[str, Any]]] = {}
         for path in raw_files:
             try:
                 envelope = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(envelope, dict):
+                    raise ValueError("Raw envelope must be a JSON object")
                 key = (str(envelope["source_id"]), str(envelope["source_record_id"]))
-                collected_at = str(envelope.get("collected_at", ""))
+                if not re.fullmatch(r"[a-zA-Z0-9_-]+", key[0]):
+                    raise ValueError("Invalid source ID")
+                collected_at = datetime.fromisoformat(str(envelope["collected_at"]).replace("Z", "+00:00"))
+                if collected_at.tzinfo is None:
+                    raise ValueError("collected_at must include a timezone")
             except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                 report["invalid"].append({"file": str(path.relative_to(self.settings.project_root)), "reason": str(exc)})
                 continue
@@ -485,8 +518,15 @@ class NormalizationPipeline:
             source_id = str(envelope["source_id"])
             target = processed_root / source_id / f"{record.record_id}.json"
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(record.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(json.dumps(record.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(target)
             report["processed"] += 1
+            report["processed_files"].append(target.relative_to(self.settings.processed_dir).as_posix())
+            report["sources"][record.source_name] = report["sources"].get(record.source_name, 0) + 1
+            for name in ("country_or_region", "total_minutes", "difficulty", "allergens", "nutrition", "substitutions"):
+                if getattr(record, name) in (None, "", []):
+                    report["missing_fields"][name] = report["missing_fields"].get(name, 0) + 1
             seen[record.duplicate_group_key].append(record.record_id)
 
         report["duplicate_candidates"] = [
@@ -494,5 +534,7 @@ class NormalizationPipeline:
             for key, ids in sorted(seen.items()) if len(ids) > 1
         ]
         report_path = self.settings.processed_dir / "quality_report.json"
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary = report_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(report_path)
         return report

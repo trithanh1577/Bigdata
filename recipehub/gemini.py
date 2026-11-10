@@ -56,7 +56,9 @@ class GeminiClient:
         if not self.available:
             raise GeminiUnavailable()
         model = quote(self.settings.llm_model, safe="-._")
-        endpoint = f"{self.settings.llm_api_base_url.rstrip('/')}/models/{model}:generateContent"
+        # Older .env files used the OpenAI-compatible ".../v1beta/openai" base URL.
+        base = self.settings.llm_api_base_url.rstrip("/").removesuffix("/openai")
+        endpoint = f"{base}/models/{model}:generateContent"
         try:
             response = requests.post(
                 endpoint,
@@ -97,12 +99,20 @@ class GeminiClient:
             raise GeminiUnavailable()
         return text
 
-    def generate(self, system: str, user_text: str, max_tokens: int = 1200, json_response: bool = False) -> str:
+    def generate(
+        self, system: str, user_text: str, max_tokens: int = 1200, json_response: bool = False,
+        history: list[dict[str, str]] | None = None,
+    ) -> str:
         generation: dict[str, Any] = {"maxOutputTokens": max_tokens}
         if json_response:
             generation["responseMimeType"] = "application/json"
+        # Earlier turns come from the server-side session, never from the browser.
+        previous = [
+            {"role": "model" if turn.get("role") == "model" else "user", "parts": [{"text": str(turn["text"])}]}
+            for turn in (history or []) if turn.get("text")
+        ]
         payload: dict[str, Any] = {
-            "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+            "contents": [*previous, {"role": "user", "parts": [{"text": user_text}]}],
             "generationConfig": generation,
         }
         if system:

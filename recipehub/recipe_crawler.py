@@ -63,6 +63,8 @@ class RecipeCrawler:
             payload = response.json()
             if not isinstance(payload, dict):
                 raise ValueError(f"Expected a JSON object from {url}")
+            if payload.get("error"):
+                raise ValueError(f"Provider API error: {payload['error']}")
             time.sleep(self.settings.delay_seconds)
             return payload
         raise RuntimeError("HTTP retry loop ended unexpectedly")
@@ -440,6 +442,7 @@ class RecipeCrawler:
 
         cursor = cursor or {}
         continuation = cursor.get("cmcontinue")
+        seen_continuations: set[str] = set()
         records: list[RawRecord] = []
         while len(records) < limit:
             remaining = max(1, limit - len(records))
@@ -447,7 +450,7 @@ class RecipeCrawler:
                 "action": "query",
                 "list": "categorymembers",
                 "cmtitle": str(source.get("category", "Category:Recipes")),
-                "cmnamespace": 0,
+                "cmnamespace": int(source.get("namespace", 102)),
                 "cmprop": "ids|title",
                 "cmsort": "timestamp",
                 "cmdir": "desc",
@@ -501,6 +504,9 @@ class RecipeCrawler:
             continuation = next_continuation
             if not continuation:
                 break
+            if str(continuation) in seen_continuations:
+                raise ValueError("Wikibooks returned a repeated pagination token")
+            seen_continuations.add(str(continuation))
         return records, {"cmcontinue": continuation}
 
     def _has_contactable_user_agent(self) -> bool:
