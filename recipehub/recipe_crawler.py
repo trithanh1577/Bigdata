@@ -7,11 +7,13 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, urlsplit
+from uuid import uuid4
 
 import requests
 from bs4 import BeautifulSoup
 
 from recipehub.config import Settings
+from recipehub.ingestion_lock import ingestion_lock
 from recipehub.text import stable_id
 
 
@@ -163,7 +165,11 @@ class RecipeCrawler:
 
     def collect_discovered_recipe_pages(self, pages: list[dict[str, str]]) -> int:
         """Save search-discovered Recipe JSON-LD pages into the raw data lake."""
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        with ingestion_lock(self.settings.processed_dir):
+            return self._collect_discovered_locked(pages)
+
+    def _collect_discovered_locked(self, pages: list[dict[str, str]]) -> int:
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + uuid4().hex[:8]
         summaries: dict[str, dict[str, Any]] = {}
         saved = 0
         for page in pages[:3]:
@@ -234,6 +240,10 @@ class RecipeCrawler:
     def crawl(self, max_items_per_source: int = 20, source_ids: list[str] | None = None) -> dict[str, Any]:
         if max_items_per_source < 1:
             raise ValueError("max_items_per_source must be at least 1")
+        with ingestion_lock(self.settings.processed_dir):
+            return self._crawl_locked(max_items_per_source, source_ids)
+
+    def _crawl_locked(self, max_items_per_source: int, source_ids: list[str] | None) -> dict[str, Any]:
         state = self._load_state()
         configured_sources = self.settings.load_sources()
         requested_sources = set(source_ids or [])
@@ -242,7 +252,7 @@ class RecipeCrawler:
         if unknown_sources:
             raise ValueError("Unknown source ID(s): " + ", ".join(sorted(unknown_sources)))
         sources = [source for source in configured_sources if not requested_sources or str(source.get("id", "")) in requested_sources]
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + uuid4().hex[:8]
         report: dict[str, Any] = {
             "run_id": run_id,
             "sources": 0,
@@ -385,6 +395,10 @@ class RecipeCrawler:
         areas = [available_areas[area.casefold()] for area in configured_areas if area.casefold() in available_areas]
         if not areas:
             raise ValueError(f"No configured areas are available from TheMealDB: {configured_areas}")
+        next_area = cursor.get("next_area")
+        if next_area in areas:
+            start_area = areas.index(next_area)
+            areas = areas[start_area:] + areas[:start_area]
         meals_by_area: dict[str, list[dict[str, Any]]] = {}
         for area in areas:
             response = self._get_json(f"{base_url}/{api_key}/filter.php", {"a": str(area)})
@@ -401,9 +415,11 @@ class RecipeCrawler:
         # Round-robin configured areas so a small PoC crawl represents several
         # cuisines; persist the last ID per area to keep later scheduled runs
         # moving through the available collection rather than repeating page 1.
+        # Also continue at the next area when a run stops mid-round.
         next_area_cursors = dict(area_cursors)
+        next_area = areas[0]
         while len(meals_by_id) < max(1, limit) and any(meals_by_area.values()):
-            for area in areas:
+            for area_index, area in enumerate(areas):
                 candidates = meals_by_area[str(area)]
                 if candidates:
                     meal = candidates.pop(0)
@@ -412,6 +428,7 @@ class RecipeCrawler:
                     # Keep the area from the request because the filter
                     # endpoint does not always include strArea in its results.
                     meals_by_id.setdefault(meal_id, str(area))
+                    next_area = areas[(area_index + 1) % len(areas)]
                     if len(meals_by_id) >= max(1, limit):
                         break
 
@@ -428,7 +445,7 @@ class RecipeCrawler:
                 meal,
                 {"language": "en", "_cursor_area": area, "_cursor_id": meal_id},
             ))
-        return records, {"areas": next_area_cursors}
+        return records, {"areas": next_area_cursors, "next_area": next_area}
 
     def _wikibooks_records(
         self, source: dict[str, object], limit: int, cursor: dict[str, Any] | None = None

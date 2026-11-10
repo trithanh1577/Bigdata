@@ -102,6 +102,57 @@ class CrawlerTests(unittest.TestCase):
             self.assertEqual(listing_calls[0]["cmnamespace"], 102)
             self.assertIsNone(next_cursor["cmcontinue"])
 
+    def test_small_crawls_rotate_starting_area_across_saved_cursors(self) -> None:
+        areas = ["Italian", "Japanese", "Thai", "Vietnamese", "Chinese"]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = Settings(project_root=root, raw_dir=root / "raw", processed_dir=root / "processed", state_dir=root / "state")
+            crawler = RecipeCrawler(settings)
+            source = {"id": "themealdb", "name": "TheMealDB", "type": "themealdb", "base_url": "https://meal.test/api", "areas": areas}
+
+            def response(url, params=None):
+                if url.endswith("list.php"):
+                    return {"meals": [{"strArea": area} for area in areas]}
+                if url.endswith("filter.php"):
+                    return {"meals": [{"idMeal": f"{params['a']}-{index}"} for index in range(3)]}
+                if url.endswith("lookup.php"):
+                    return {"meals": [{"idMeal": params["i"], "strMeal": params["i"]}]}
+                raise AssertionError(url)
+
+            # Old cursor files only contain per-area IDs and must still load.
+            cursor = {"areas": {"Italian": "Italian-0"}}
+            collected = []
+            with patch.object(crawler, "_get_json", side_effect=response):
+                for _ in range(3):
+                    records, cursor = crawler._themealdb_records(source, 2, cursor)
+                    collected.extend(record[0] for record in records)
+                    # Simulate a restart through the same on-disk cursor file.
+                    crawler._save_state({"themealdb": cursor})
+                    cursor = RecipeCrawler(settings)._load_state()["themealdb"]
+            self.assertEqual(collected, ["Italian-1", "Japanese-0", "Thai-0", "Vietnamese-0", "Chinese-0", "Italian-2"])
+
+    def test_single_item_crawls_eventually_visit_every_area(self) -> None:
+        areas = ["Italian", "Japanese", "Thai"]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            crawler = RecipeCrawler(Settings(project_root=root, raw_dir=root / "raw", processed_dir=root / "processed", state_dir=root / "state"))
+            source = {"base_url": "https://meal.test/api", "areas": areas}
+
+            def response(url, params=None):
+                if url.endswith("list.php"):
+                    return {"meals": [{"strArea": area} for area in areas]}
+                if url.endswith("filter.php"):
+                    return {"meals": [{"idMeal": params["a"]}]}
+                return {"meals": [{"idMeal": params["i"]}]}
+
+            cursor = None
+            collected = []
+            with patch.object(crawler, "_get_json", side_effect=response):
+                for _ in areas:
+                    records, cursor = crawler._themealdb_records(source, 1, cursor)
+                    collected.append(records[0][0])
+            self.assertEqual(collected, areas)
+
     def test_schema_org_adapter_reads_recipe_pages_and_advances_url_cursor(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

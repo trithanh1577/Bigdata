@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from recipehub.config import Settings
+from recipehub.ingestion_lock import ingestion_lock
 from recipehub.normalize import NormalizationPipeline
 from recipehub.recipe_crawler import RecipeCrawler
 from recipehub.knowledge_base import KnowledgeBase
+from recipehub.seed import export_seed, seed_path
 
 
 def _positive_int(value: str) -> int:
@@ -54,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     schedule.add_argument("--max-items", type=_positive_int, default=20, help="Maximum recipes per source per run")
     commands.add_parser("stats", help="Show raw/processed counts and country coverage")
     commands.add_parser("build", aliases=["index"], help="Build or refresh the SQLite knowledge base from processed recipes")
+    export = commands.add_parser("export-seed", help="Export indexed recipes to the Git-tracked deployment dataset")
+    export.add_argument("--output", type=Path, help="Output JSON path; defaults to seed/recipes.json")
+    restore = commands.add_parser("import-seed", help="Merge a deployment dataset into SQLite without deleting recipes")
+    restore.add_argument("--input", type=Path, help="Input JSON path; defaults to seed/recipes.json")
     pipeline = commands.add_parser("pipeline", help="Crawl, normalize, and synchronize the knowledge base")
     pipeline.add_argument("--max-items", type=_positive_int, default=20)
     server = commands.add_parser("serve", help="Serve the connected website and HTTP API")
@@ -61,6 +68,32 @@ def build_parser() -> argparse.ArgumentParser:
     server.add_argument("--port", type=_positive_int, default=8000)
     server.add_argument("--allow-origin", action="append", default=None, help="Allowed cross-origin frontend URL; repeat for multiple origins")
     return parser
+
+
+def _run_pipeline(settings: Settings, max_items: int) -> dict[str, Any]:
+    # Keep the snapshot and its database import together. Individual stages
+    # also lock when invoked separately; the shared lock is reentrant.
+    with ingestion_lock(settings.processed_dir):
+        crawl_result = RecipeCrawler(settings).crawl(max_items)
+        normalize_result = NormalizationPipeline(settings).run()
+        index_result = KnowledgeBase(settings.database_path).import_processed(settings.processed_dir, seed_file=seed_path(settings))
+        return {"crawl": crawl_result, "normalize": normalize_result, "index": index_result}
+
+
+def _prepare_store(settings: Settings) -> KnowledgeBase:
+    """Restore the shipped collection before accepting website requests."""
+    with ingestion_lock(settings.processed_dir):
+        store = KnowledgeBase(settings.database_path)
+        bundled = seed_path(settings)
+        processed_files = list((settings.processed_dir / "recipes").glob("*/*.json"))
+        if processed_files or (settings.processed_dir / "quality_report.json").exists():
+            result = store.import_processed(settings.processed_dir, seed_file=bundled)
+        elif bundled.exists():
+            result = store.import_seed(bundled)
+        else:
+            return store
+        print(json.dumps({"startup_import": result, "recipes": store.stats()["recipes"]}), flush=True)
+        return store
 
 
 def main() -> None:
@@ -88,20 +121,21 @@ def main() -> None:
             result["knowledge_base"] = KnowledgeBase(settings.database_path).stats()
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command in {"build", "index"}:
-        print(json.dumps(KnowledgeBase(settings.database_path).import_processed(settings.processed_dir), ensure_ascii=False, indent=2))
+        print(json.dumps(KnowledgeBase(settings.database_path).import_processed(settings.processed_dir, seed_file=seed_path(settings)), ensure_ascii=False, indent=2))
+    elif args.command == "export-seed":
+        print(json.dumps(export_seed(settings, args.output), ensure_ascii=False, indent=2))
+    elif args.command == "import-seed":
+        with ingestion_lock(settings.processed_dir):
+            result = KnowledgeBase(settings.database_path).import_seed(args.input or seed_path(settings))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "serve":
         from recipehub.server import serve
-        store = KnowledgeBase(settings.database_path)
-        processed_files = list((settings.processed_dir / "recipes").glob("*/*.json"))
-        if processed_files:
-            store.import_processed(settings.processed_dir)
+        store = _prepare_store(settings)
         serve(store, settings.project_root / "frontend", args.host, args.port, args.allow_origin, settings)
     elif args.command == "pipeline":
-        crawl_result = RecipeCrawler(settings).crawl(args.max_items)
-        normalize_result = NormalizationPipeline(settings).run()
-        index_result = KnowledgeBase(settings.database_path).import_processed(settings.processed_dir)
-        print(json.dumps({"crawl": crawl_result, "normalize": normalize_result, "index": index_result}, ensure_ascii=False, indent=2))
-        if crawl_result["failed"] or normalize_result["invalid"]:
+        result = _run_pipeline(settings, args.max_items)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if result["crawl"]["failed"] or result["normalize"]["invalid"]:
             raise SystemExit(1)
     elif args.command == "schedule":
         interval_seconds = args.minutes * 60 if args.minutes else (args.days or 1) * 24 * 60 * 60
@@ -110,10 +144,13 @@ def main() -> None:
         try:
             while True:
                 started = time.monotonic()
-                crawl_result = RecipeCrawler(settings).crawl(args.max_items)
-                normalize_result = NormalizationPipeline(settings).run()
-                index_result = KnowledgeBase(settings.database_path).import_processed(settings.processed_dir)
-                print(json.dumps({"crawl": crawl_result, "normalize": normalize_result, "index": index_result}, ensure_ascii=False))
+                try:
+                    result = _run_pipeline(settings, args.max_items)
+                    print(json.dumps(result, ensure_ascii=False), flush=True)
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    # A temporary disk/database problem must not silently stop
+                    # automatic collection for the remainder of the demo.
+                    print(json.dumps({"error": f"{type(exc).__name__}: {exc}", "retry_in_seconds": interval_seconds}, ensure_ascii=False), flush=True)
                 time.sleep(max(0, interval_seconds - (time.monotonic() - started)))
         except KeyboardInterrupt:
             print("Scheduler stopped.")

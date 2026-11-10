@@ -10,9 +10,11 @@ from typing import Any
 
 from recipehub.config import Settings
 from recipehub.gemini import GeminiClient, GeminiUnavailable
+from recipehub.ingestion_lock import ingestion_lock
 from recipehub.knowledge_base import KnowledgeBase, fold, parse_filters, query_tokens
 from recipehub.normalize import NormalizationPipeline
 from recipehub.recipe_crawler import RecipeCrawler
+from recipehub.seed import seed_path
 
 
 SESSION_TTL_SECONDS = 3600
@@ -28,14 +30,6 @@ REGION_ALIASES = (
 )
 STOP_WORDS = set("a an the i me my we us you your please can could would should do does did to of for from in on at by some any with and or that this these those it its them their find search show suggest recommend recipe recipes dish dishes meal meals cook cooking make something want like need what which how are is have has goes into about tell try list ingredients ingredient steps step instructions instruction method preparation source sources provenance attribution time minutes minute min under within less than up total takes take difficulty easy hard nutrition calories calorie allergens allergen substitutions substitution substitute replace alternatives alternative instead tools equipment tips tip explain".split())
 STOP_WORDS.update("toi minh ban muon lam mon an tim co hay giup nha nau trong la gi cua nao the".split())
-# Common Vietnamese ingredient words (accent-folded) -> English terms used by the source records,
-# so Vietnamese searches work even without Gemini. Longer phrases are replaced first.
-VI_INGREDIENTS = {
-    "ca chua": "tomato", "thit bo": "beef", "thit ga": "chicken", "thit heo": "pork", "thit lon": "pork",
-    "hai san": "seafood", "trung ga": "egg", "tom": "shrimp", "gao": "rice", "com": "rice", "hanh": "onion",
-    "gung": "ginger", "khoai tay": "potato", "ca rot": "carrot", "dau phu": "tofu", "sua": "milk",
-    "pho mai": "cheese", "chanh": "lime", "ot": "chili", "ga": "chicken",
-}
 VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich pho bun bo com canh gi nao bi ung cho thay".split())
 LOGGER = logging.getLogger(__name__)
 
@@ -117,6 +111,7 @@ class ConversationService:
     def _retrieve(self, question: str, preferences: dict[str, Any], search_query: str = "") -> list[dict[str, Any]]:
         filters = {**preferences, "q": ""}
         remainder = question
+        region_matched = False
         facets = self.store.facets()
         for region in sorted(facets["countries"], key=len, reverse=True):
             aliases = {fold(region)}
@@ -130,6 +125,7 @@ class ConversationService:
                 if preferences["country"] and preferences["country"] != region:
                     return []
                 filters["country"] = region
+                region_matched = True
                 remainder = re.sub(r"(?<!\w)" + re.escape(match) + r"(?!\w)", " ", remainder)
                 break
         max_time = re.search(r"(?:under|within|in|less than|up to|duoi|trong vong|trong|khong qua|toi da)\s+(\d{1,5})\s*(?:min(?:ute)?s?|phut)\b", remainder)
@@ -146,17 +142,17 @@ class ConversationService:
         terms = [word for word in query_tokens(remainder) if word not in STOP_WORDS]
         if not terms and search_query:
             terms = [word for word in query_tokens(search_query) if word not in STOP_WORDS]
+        # Removing conversational filler must not turn a greeting into a search
+        # for every recipe. Empty queries are useful only for explicit recipe
+        # requests or a region/time mentioned in the question itself.
+        recipe_request = bool(re.search(
+            r"\b(recipe|recipes|dish|dishes|meal|meals|cook|cooking|make|find|search|suggest|recommend|mon|nau|tim)\b",
+            question,
+        ))
+        if not terms and not (recipe_request or max_time or region_matched):
+            return []
         filters["q"] = " ".join(terms)
-        found = self.store.search(filters, page_size=3)["items"]
-        if not found and terms and response_language(question, "en") == "vi":
-            # Fallback for Vietnamese ingredient words against English source records.
-            mapped = remainder
-            for vietnamese, english in sorted(VI_INGREDIENTS.items(), key=lambda item: -len(item[0])):
-                mapped = re.sub(r"(?<!\w)" + vietnamese + r"(?!\w)", english, mapped)
-            filters["q"] = " ".join(word for word in query_tokens(mapped) if word not in STOP_WORDS)
-            if filters["q"] != " ".join(terms):
-                found = self.store.search(filters, page_size=3)["items"]
-        return found
+        return self.store.search(filters, page_size=3)["items"]
 
     def _search_intent(self, message: str, history: list[dict[str, str]]) -> tuple[bool, str]:
         """Ask Gemini whether the turn needs a recipe lookup and for which dish (in English)."""
@@ -194,11 +190,14 @@ class ConversationService:
             pages = self.gemini.search_recipe_pages(query, language, exclusions)
             if not pages:
                 return False, "no_search_results", None
-            saved = self.crawler.collect_discovered_recipe_pages(pages)
-            if not saved:
-                return False, "no_recipe_jsonld", None
-            normalized = NormalizationPipeline(self.settings).run()
-            imported = self.store.import_processed(self.settings.processed_dir)
+            # Share the same process/thread lock as the CLI scheduler. Publish
+            # the raw data, normalized manifest, and SQLite update together.
+            with ingestion_lock(self.settings.processed_dir):
+                saved = self.crawler.collect_discovered_recipe_pages(pages)
+                if not saved:
+                    return False, "no_recipe_jsonld", None
+                normalized = NormalizationPipeline(self.settings).run()
+                imported = self.store.import_processed(self.settings.processed_dir, seed_file=seed_path(self.settings))
             indexed_count = imported.get("inserted", 0) + imported.get("updated", 0) + imported.get("unchanged", 0)
             LOGGER.info("Recipe discovery saved %s page(s); normalized %s and indexed %s recipe(s)", saved, normalized.get("processed", 0), indexed_count)
             success = True
@@ -345,6 +344,11 @@ class ConversationService:
             or (language == "vi" and bool(re.search(r"\b(no|nay|do|ay|chung)\b", question)))
             or (intent != "discover" and not [word for word in query_tokens(question) if word not in STOP_WORDS])
         )
+        # A named dish takes precedence over pronouns elsewhere in the same
+        # message. Check names without preferences first, so an excluded named
+        # dish cannot accidentally fall back to the previous eligible recipe.
+        if self.store.named_in(question, {}):
+            follow_up = False
         has_context = bool(context.get("record_ids"))
         history = context.get("history", [])
         records = self.store.eligible(context.get("record_ids", []), preferences) if follow_up else []
@@ -383,6 +387,15 @@ class ConversationService:
                 "Bạn đang hỏi về món nào? Hãy cho mình biết tên món trước nhé."
                 if language == "vi" else
                 "Which dish do you mean? Tell me the dish name first."
+            )
+        elif not records and re.fullmatch(
+            r"(?:hi|hello|hey|how are you|thanks|thank you|xin chao|chao ban|cam on)[\s.!?,]*",
+            question,
+        ):
+            text = (
+                "Chào bạn! Mình có thể giúp tìm món, nguyên liệu và cách nấu trong bộ sưu tập. Bạn muốn nấu món gì?"
+                if language == "vi" else
+                "Hello! I can help find dishes, ingredients, and cooking steps in the collection. What would you like to cook?"
             )
         elif not records:
             if discovery_state == "gemini_error" and discovery_status == 429:

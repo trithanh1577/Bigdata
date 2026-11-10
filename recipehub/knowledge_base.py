@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from recipehub.models import validate_recipe
+from recipehub.ingestion_lock import ingestion_lock
+from recipehub.seed import load_seed, merge_recipe_records
+from recipehub.text import culinary_query_groups, ingredient_exclusion_terms, normalize_recipe_query
 
 
 def fold(value: str) -> str:
@@ -94,6 +97,7 @@ class KnowledgeBase:
         db = sqlite3.connect(self.path, timeout=15)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
+        db.create_function("regexp", 2, lambda pattern, text: re.search(pattern, text) is not None, deterministic=True)
         try:
             with db:
                 yield db
@@ -140,7 +144,22 @@ class KnowledgeBase:
                 db.execute("INSERT INTO recipe_fts VALUES (?, ?, ?, ?, ?, ?)", (record_id, record["title"], record["description"], record["country_or_region"], " ".join(record["categories"]), " ".join(item["name"] for item in record["ingredients"])))
         return report
 
-    def import_processed(self, processed_dir: Path) -> dict[str, int]:
+    def import_seed(self, path: Path) -> dict[str, int]:
+        records = load_seed(path)
+        with self.connect() as db:
+            existing = [json.loads(row["payload"]) for row in db.execute("SELECT payload FROM recipes")]
+        # Restore a bundled baseline without deleting other collected dishes or
+        # overwriting a newer source version already present on the server.
+        merged = merge_recipe_records(existing, records)
+        return {"files": len(records), **self.import_records(merged)}
+
+    def import_processed(self, processed_dir: Path, seed_file: Path | None = None) -> dict[str, int]:
+        # Readers must see one complete publication of files and its manifest,
+        # including when the scheduler and chat ingestion run in other processes.
+        with ingestion_lock(processed_dir):
+            return self._import_processed(processed_dir, seed_file)
+
+    def _import_processed(self, processed_dir: Path, seed_file: Path | None) -> dict[str, int]:
         records = []
         paths = sorted((processed_dir / "recipes").glob("*/*.json"))
         report_path = processed_dir / "quality_report.json"
@@ -157,6 +176,14 @@ class KnowledgeBase:
                 records.append(validate_recipe(json.loads(path.read_text(encoding="utf-8"))))
             except (OSError, ValueError, TypeError) as exc:
                 raise ValueError(f"Cannot index {path.name}: {exc}") from exc
+        if seed_file is not None and seed_file.exists():
+            seeds = load_seed(seed_file)
+            with self.connect() as db:
+                existing = [json.loads(row["payload"]) for row in db.execute("SELECT payload FROM recipes")]
+            # Future crawls must retain the bundled recipes even when this
+            # deployment has no corresponding raw/processed files yet.
+            merged = merge_recipe_records(existing, seeds, records)
+            return {"files": len(records), "seed_recipes": len(seeds), **self.import_records(merged)}
         return {"files": len(records), **self.import_records(records, replace=True)}
 
     def recipe(self, record_id: str) -> dict[str, Any] | None:
@@ -168,14 +195,24 @@ class KnowledgeBase:
     def _where(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         values: list[Any] = []
-        terms = query_tokens(filters["q"])
-        if filters["q"] and not terms:
+        groups = culinary_query_groups(filters["q"])
+        if filters["q"] and not groups:
             clauses.append("0")
-        elif terms:
+        elif groups:
             clauses.append("r.record_id IN (SELECT record_id FROM recipe_fts WHERE recipe_fts MATCH ?)")
-            # Quote each token. User punctuation/operators are never executable
-            # FTS syntax, and all SQL values are bound parameters.
-            values.append(" AND ".join(f'"{term}"*' for term in terms))
+            # Each phrase can match its source wording OR a known translation;
+            # groups still combine with AND, preserving multi-term searches.
+            # Tokens are quoted and bound, so user input cannot execute FTS syntax.
+            values.append(" AND ".join(
+                "(" + " OR ".join(
+                    "(" + " AND ".join(
+                        f'"{term}"' + ("*" if index == 0 or variant == normalize_recipe_query(variant) else "")
+                        for term in query_tokens(variant)
+                    ) + ")"
+                    for index, variant in enumerate(variants)
+                ) + ")"
+                for variants in groups
+            ))
         for key, column in (("country", "country"), ("difficulty", "difficulty")):
             if filters[key]:
                 clauses.append(f"r.{column}=?")
@@ -184,16 +221,27 @@ class KnowledgeBase:
             clauses.append("EXISTS (SELECT 1 FROM categories c WHERE c.record_id=r.record_id AND c.name=?)")
             values.append(filters["category"])
         if filters["ingredient"]:
-            clauses.append("EXISTS (SELECT 1 FROM ingredients i WHERE i.record_id=r.record_id AND i.name=?)")
-            values.append(fold(filters["ingredient"]))
+            ingredient_names = list(dict.fromkeys(fold(term) for term in ingredient_exclusion_terms(filters["ingredient"])))
+            placeholders = ",".join("?" for _ in ingredient_names)
+            clauses.append(f"EXISTS (SELECT 1 FROM ingredients i WHERE i.record_id=r.record_id AND i.name IN ({placeholders}))")
+            values.extend(ingredient_names)
         if filters["max_minutes"] is not None:
             clauses.append("r.total_minutes IS NOT NULL AND r.total_minutes<=?")
             values.append(filters["max_minutes"])
         if filters["require_allergens"]:
             clauses.append("r.allergen_count>0")
         for term in filters["exclude_ingredients"]:
-            clauses.append("instr(r.exclusion_text, ?)=0")
-            values.append(term)
+            aliases = list(dict.fromkeys(fold(item) for item in ingredient_exclusion_terms(term)))
+            for alias in aliases:
+                if alias == term and (len(term) > 3 or len(aliases) == 1):
+                    clauses.append("instr(r.exclusion_text, ?)=0")
+                    values.append(alias)
+                else:
+                    # Short aliases such as Vietnamese "lạc" must not match
+                    # unrelated words such as "black" in "black pepper".
+                    clauses.append("r.exclusion_text NOT REGEXP ?")
+                    compound = len(alias) >= 4 and alias == normalize_recipe_query(alias)
+                    values.append(r"(?<!\w)" + re.escape(alias) + ("" if compound else r"(?!\w)"))
         return " AND ".join(clauses) or "1", values
 
     def search(self, filters: dict[str, Any] | None = None, page: int = 1, page_size: int = 6) -> dict[str, Any]:

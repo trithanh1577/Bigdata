@@ -4,8 +4,18 @@ Các thay đổi được ghi từ mới đến cũ. Dự án hiện chưa phát
 
 ## 2026-11-10
 
+### Sửa lỗi
+
+- Dùng chung từ nguyên liệu Việt–Anh cho tìm kiếm bộ sưu tập và lọc nguyên liệu cần tránh trong chat; giữ tên gốc và tránh khớp nhầm từ ngắn bên trong nguyên liệu khác.
+- Ưu tiên món được nêu rõ trong câu hỏi mới thay vì tiếp tục trả lời món cũ chỉ vì câu có đại từ; câu xã giao không trả công thức ngẫu nhiên.
+- Kiểm tra cấu trúc bản dịch Gemini trước khi sử dụng; phản hồi sai định dạng trả lại nội dung gốc thay vì ngắt yêu cầu của website.
+- Khóa cập nhật dữ liệu dùng chung giữa thread và tiến trình để chat, crawler, chuẩn hóa và nhập SQLite không tranh chấp file tạm hoặc manifest. Thêm hậu tố duy nhất cho mỗi lượt thu thập.
+- Giữ scheduler hoạt động qua lỗi ghi dữ liệu/SQLite tạm thời và lưu vị trí quốc gia kế tiếp để lượt thu thập ít món không bỏ qua các quốc gia phía sau.
+
 ### Thêm
 
+- Thêm `export-seed` để xuất công thức đã lập chỉ mục thành `seed/recipes.json`, có thể đưa lên GitHub. Server tự nhập bộ này khi khởi động; `import-seed` hỗ trợ nhập thủ công. Chỉ xuất bản ghi công thức kèm nguồn, không xuất hội thoại, khóa API hoặc cache.
+- Hợp nhất dữ liệu mẫu với dữ liệu đã thu thập theo ID và thời điểm cập nhật, để deploy lại hoặc chạy crawler không làm mất các món đã có trong bộ sưu tập.
 - Tích hợp backend gồm cơ sở tri thức SQLite/FTS5, dịch vụ hội thoại, HTTP API và máy chủ phục vụ website.
 - Bổ sung Gemini tùy chọn để trả lời dựa trên công thức đã truy xuất, chuyển câu hỏi tiếng Việt sang cụm tìm kiếm tiếng Anh, dịch nội dung công thức và tìm món chưa có bằng Google Search grounding.
 - Cho phép crawler nhận tối đa ba trang được tìm thấy khi mỗi trang có dữ liệu Schema.org `Recipe` dạng JSON-LD. Dữ liệu gốc, URL và thông tin nguồn được lưu trước khi chuẩn hóa và lập chỉ mục.

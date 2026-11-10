@@ -250,8 +250,9 @@ class RecipeTranslator:
                 )
                 if response.startswith("```"):
                     response = response.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                translated = json.loads(response).get("translations")
-                if not isinstance(translated, list) or len(translated) != len(batch) or any(not isinstance(item, str) for item in translated):
+                payload = json.loads(response)
+                translated = payload.get("translations") if isinstance(payload, dict) else None
+                if not isinstance(translated, list) or len(translated) != len(batch) or any(not isinstance(item, str) or not item.strip() for item in translated):
                     raise ValueError("invalid translation response")
                 updates = {
                     hashlib.sha256(f"{language}\0{original}".encode("utf-8")).hexdigest(): localized

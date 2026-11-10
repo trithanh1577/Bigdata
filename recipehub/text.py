@@ -4,6 +4,7 @@ import hashlib
 import html
 import re
 import unicodedata
+from functools import cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
@@ -23,7 +24,68 @@ CULINARY_TERM_ALIASES = {
     "bun": "rice noodles", "ca ri": "curry", "dua": "coconut", "duong": "sugar", "muoi": "salt",
     "main course": "main course", "mon chinh": "main course", "mon khai vi": "appetizer",
     "mon trang mieng": "dessert", "mon canh": "soup",
+    "mi y": "pasta", "sua": "milk", "sua tuoi": "milk", "dau nanh": "soy",
+    "lac": "peanut", "dau phung": "peanut", "vung": "sesame", "me": "sesame",
+    "lua mi": "wheat", "hat dieu": "cashew", "hanh nhan": "almond", "sot": "sauce",
+    "hai san": "seafood", "trung ga": "egg", "ot": "chili", "chanh": "lime",
 }
+
+# Keep source wording as an alternative to the translated search term. Replacing
+# words outright would stop titles such as "Bo kho" from matching their source.
+_CULINARY_GROUPS: dict[str, list[str]] = {}
+for _alias, _canonical in CULINARY_TERM_ALIASES.items():
+    _CULINARY_GROUPS.setdefault(_canonical, [_canonical]).append(_alias)
+for _canonical, _aliases in {
+    "peanut": ["peanuts", "groundnut", "groundnuts", "đậu phộng", "đậu phụng"],
+    "soy": ["soya", "soybean", "soybeans", "đậu nành"],
+    "shrimp": ["prawn", "prawns", "shrimps"],
+    "egg": ["eggs"], "milk": ["sữa", "sữa tươi"],
+    "wheat": ["lúa mì"], "cashew": ["cashews", "hạt điều"],
+    "almond": ["almonds"], "sesame": ["vừng", "mè"],
+    "tofu": ["đậu phụ", "đậu hũ", "dau phu", "dau hu"],
+    "ginger": ["gừng", "gung"], "carrot": ["cà rốt", "ca rot"],
+}.items():
+    _CULINARY_GROUPS.setdefault(_canonical, [_canonical]).extend(_aliases)
+
+
+def _culinary_fold(value: str) -> str:
+    return normalize_text(value).replace("đ", "d")
+
+
+@cache
+def _culinary_vocabulary() -> dict[str, tuple[str, list[str]]]:
+    vocabulary = {}
+    for canonical, variants in _CULINARY_GROUPS.items():
+        for variant in variants:
+            vocabulary[_culinary_fold(variant)] = (canonical, variants)
+    return vocabulary
+
+
+def culinary_query_groups(value: str) -> list[list[str]]:
+    """Return bilingual phrase alternatives without losing the original query."""
+    vocabulary = _culinary_vocabulary()
+    words = re.findall(r"[^\W_]+", normalize_text(value), flags=re.UNICODE)
+    groups = []
+    index = 0
+    longest = max(len(term.split()) for term in vocabulary)
+    while index < len(words):
+        for count in range(min(longest, len(words) - index), 0, -1):
+            phrase = " ".join(words[index:index + count])
+            entry = vocabulary.get(_culinary_fold(phrase))
+            if entry:
+                groups.append(list(dict.fromkeys([phrase, *entry[1]])))
+                index += count
+                break
+        else:
+            groups.append([words[index]])
+            index += 1
+    return groups
+
+
+def ingredient_exclusion_terms(value: str) -> list[str]:
+    """Expand a supplied ingredient name to known English/Vietnamese aliases."""
+    entry = _culinary_vocabulary().get(_culinary_fold(value))
+    return list(dict.fromkeys([value, *(entry[1] if entry else [])]))
 
 
 def clean_text(value: str | None) -> str:
@@ -42,10 +104,9 @@ def normalize_text(value: str) -> str:
 
 def normalize_recipe_query(value: str) -> str:
     """Map common Vietnamese recipe terms and country names to source vocabulary."""
-    result = normalize_text(value)
-    for term, canonical in sorted(CULINARY_TERM_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
-        result = re.sub(rf"\b{re.escape(term)}\b", canonical, result)
-    return result
+    vocabulary = _culinary_vocabulary()
+    pattern = r"(?<!\w)(?:" + "|".join(re.escape(term) for term in sorted(vocabulary, key=len, reverse=True)) + r")(?!\w)"
+    return re.sub(pattern, lambda match: vocabulary[match[0]][0], _culinary_fold(value))
 
 
 def tokens(value: str) -> list[str]:

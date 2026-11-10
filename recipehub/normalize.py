@@ -12,6 +12,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from recipehub.config import Settings
+from recipehub.ingestion_lock import ingestion_lock
 from recipehub.models import Ingredient, RecipeRecord
 from recipehub.text import clean_text, normalize_text, sha256_text, stable_id
 
@@ -484,6 +485,10 @@ class NormalizationPipeline:
         self.settings = settings or Settings()
 
     def run(self) -> dict[str, Any]:
+        with ingestion_lock(self.settings.processed_dir):
+            return self._run_locked()
+
+    def _run_locked(self) -> dict[str, Any]:
         raw_files = sorted(self.settings.raw_dir.glob("*/runs/*/records/*.json"))
         processed_root = self.settings.processed_dir / "recipes"
         processed_root.mkdir(parents=True, exist_ok=True)
