@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from recipehub.config import Settings
 
 
 LOGGER = logging.getLogger(__name__)
+TRANSLATION_PAUSE_SECONDS = 60
 
 
 class GeminiUnavailable(RuntimeError):
@@ -176,6 +178,7 @@ class RecipeTranslator:
         self.cache_path = settings.state_dir / "translation_cache.json"
         self._lock = threading.Lock()
         self._cache: dict[str, str] = {}
+        self._paused_until = 0.0
         self._load()
 
     def _load(self) -> None:
@@ -236,6 +239,9 @@ class RecipeTranslator:
                 result[value] = cached
             elif value not in missing:
                 missing.append(value)
+        if missing and time.monotonic() < self._paused_until:
+            # Gemini just failed; show source text now instead of waiting for another timeout.
+            return [result.get(value, value) for value in values], False
         succeeded = True
         for start in range(0, len(missing), 30):
             batch = missing[start:start + 30]
@@ -262,8 +268,11 @@ class RecipeTranslator:
                 with self._lock:
                     self._cache.update(updates)
                     self._save()
-            except (GeminiUnavailable, ValueError, KeyError, IndexError, TypeError) as exc:
+            # AttributeError: valid JSON of the wrong shape, e.g. "[]" has no .get().
+            except (GeminiUnavailable, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
                 LOGGER.warning("Recipe translation failed (%s)", getattr(exc, "status_code", None) or type(exc).__name__)
+                if isinstance(exc, GeminiUnavailable):
+                    self._paused_until = time.monotonic() + TRANSLATION_PAUSE_SECONDS
                 succeeded = False
                 break
         return [result.get(value, value) for value in values], succeeded

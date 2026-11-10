@@ -12,10 +12,15 @@ import requests
 from bs4 import BeautifulSoup
 
 from recipehub.config import Settings
-from recipehub.text import stable_id
+from recipehub.text import stable_id, write_text_atomic
 
 
 RawRecord = tuple[str, str, dict[str, Any], dict[str, Any]]
+
+
+def _is_private_host(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    return host in {"localhost", "127.0.0.1", "::1"} or host.endswith((".local", ".internal", ".test"))
 CONTACT_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|https?://[^\s;)]+", re.IGNORECASE)
 PLACEHOLDER_CONTACT_RE = re.compile(
     r"your[-_ ]?(?:email|url|project)|replace[-_ ]?me|example\.(?:com|org|net)",
@@ -171,20 +176,29 @@ class RecipeCrawler:
             parts = urlsplit(url)
             if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
                 continue
-            host = parts.hostname.lower().rstrip(".")
-            if host in {"localhost", "127.0.0.1", "::1"} or host.endswith((".local", ".internal", ".test")):
+            if _is_private_host(parts.hostname):
                 continue
-            host_slug = re.sub(r"[^a-z0-9]+", "_", host).strip("_")[:36] or "source"
-            source_id = f"web_{host_slug}_{stable_id(host)[:8]}"
-            source_name = str(page.get("title", "")).strip() or host
-            summary = summaries.setdefault(source_id, {
-                "run_id": run_id, "source_id": source_id, "source_name": source_name,
-                "fetched": 0, "raw_saved": 0, "errors": [],
-            })
+            source_name = str(page.get("title", "")).strip() or parts.hostname
+            summary = summaries.setdefault("_errors", {"run_id": run_id, "errors": []})
             try:
-                raw_html = self._get_html(url, max_attempts=2)
+                # One attempt only: the visitor is waiting for the chat reply.
+                raw_html = self._get_html(url, max_attempts=1)
                 recipe = self._find_schema_org_recipe(raw_html)
-                source_record_id = str(recipe.get("@id") or recipe.get("url") or url)
+                # Gemini returns temporary Google redirect links; keep the publisher's own URL when the page states it.
+                stated = recipe.get("url") or recipe.get("@id")
+                if isinstance(stated, str) and urlsplit(stated).scheme in {"http", "https"} and urlsplit(stated).hostname:
+                    url = stated.strip()
+                host = (urlsplit(url).hostname or "").lower().rstrip(".")
+                if _is_private_host(host):
+                    continue
+                host_slug = re.sub(r"[^a-z0-9]+", "_", host).strip("_")[:36] or "source"
+                source_id = f"web_{host_slug}_{stable_id(host)[:8]}"
+                summary = summaries.setdefault(source_id, {
+                    "run_id": run_id, "source_id": source_id, "source_name": source_name,
+                    "fetched": 0, "raw_saved": 0, "errors": [],
+                })
+                # A relative @id such as "#recipe" is shared by every recipe on a site; the URL is unique.
+                source_record_id = url
                 publisher = recipe.get("publisher")
                 if isinstance(publisher, dict):
                     source_name = str(publisher.get("name") or source_name)
@@ -226,6 +240,8 @@ class RecipeCrawler:
                 summary["errors"].append(f"{type(exc).__name__}: {exc}")
 
         for source_id, summary in summaries.items():
+            if source_id == "_errors":
+                continue
             run_dir = self.settings.raw_dir / source_id / "runs" / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -348,10 +364,7 @@ class RecipeCrawler:
         return state
 
     def _save_state(self, state: dict[str, Any]) -> None:
-        path = self._state_file()
-        temporary_path = path.with_suffix(".tmp")
-        temporary_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary_path.replace(path)
+        write_text_atomic(self._state_file(), json.dumps(state, ensure_ascii=False, indent=2))
 
     @staticmethod
     def _object_list(payload: dict[str, Any], key: str, label: str) -> list[dict[str, Any]]:
@@ -402,8 +415,12 @@ class RecipeCrawler:
         # cuisines; persist the last ID per area to keep later scheduled runs
         # moving through the available collection rather than repeating page 1.
         next_area_cursors = dict(area_cursors)
+        # Start where the previous run stopped, so small runs (--max-items 2) do not always pick the first areas.
+        offset = cursor.get("next_area", 0)
+        offset = offset % len(areas) if type(offset) is int else 0
+        ordered_areas = areas[offset:] + areas[:offset]
         while len(meals_by_id) < max(1, limit) and any(meals_by_area.values()):
-            for area in areas:
+            for area in ordered_areas:
                 candidates = meals_by_area[str(area)]
                 if candidates:
                     meal = candidates.pop(0)
@@ -428,7 +445,7 @@ class RecipeCrawler:
                 meal,
                 {"language": "en", "_cursor_area": area, "_cursor_id": meal_id},
             ))
-        return records, {"areas": next_area_cursors}
+        return records, {"areas": next_area_cursors, "next_area": (offset + len(meals_by_id)) % len(areas)}
 
     def _wikibooks_records(
         self, source: dict[str, object], limit: int, cursor: dict[str, Any] | None = None

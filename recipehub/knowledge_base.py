@@ -11,12 +11,34 @@ from typing import Any, Iterator
 from recipehub.models import validate_recipe
 
 
+INDEX_VERSION = 1  # bump when fold() or indexed text changes, to re-index existing databases
+# Common Vietnamese food words (accent-folded) -> English words used by the source records.
+# Only single-meaning words: "bo" (bò/bơ), "toi" (tôi/tỏi), "nam" (nấm/Nam) are left out on purpose.
+VI_FOOD_TERMS = {
+    "ca chua": "tomato", "thit bo": "beef", "thit ga": "chicken", "thit heo": "pork", "thit lon": "pork",
+    "hai san": "seafood", "trung ga": "egg", "trung": "egg", "tom": "shrimp", "cua": "crab", "gao": "rice",
+    "com": "rice", "hanh": "onion", "gung": "ginger", "khoai tay": "potato", "ca rot": "carrot",
+    "dau phu": "tofu", "sua": "milk", "pho mai": "cheese", "chanh": "lime", "ot": "chili", "ga": "chicken",
+    "dau phong": "peanut", "lac": "peanut", "dau nanh": "soy", "bot mi": "flour", "lua mi": "wheat",
+    "me": "sesame", "hat dieu": "cashew", "ca": "fish", "muc": "squid", "nghieu": "clam", "so diep": "scallop",
+}
+
+
 def fold(value: str) -> str:
-    return "".join(char for char in unicodedata.normalize("NFD", value.casefold()) if not unicodedata.combining(char)).strip()
+    # NFD does not split "đ", so map it explicitly ("đậu" -> "dau").
+    value = value.casefold().replace("đ", "d")
+    return "".join(char for char in unicodedata.normalize("NFD", value) if not unicodedata.combining(char)).strip()
 
 
 def query_tokens(value: str) -> list[str]:
     return re.findall(r"[^\W_]+", fold(value), flags=re.UNICODE)
+
+
+def vietnamese_to_english(value: str) -> str:
+    """Replace known Vietnamese food words in accent-folded text, longest phrase first."""
+    for vietnamese, english in sorted(VI_FOOD_TERMS.items(), key=lambda item: -len(item[0])):
+        value = re.sub(r"(?<!\w)" + vietnamese + r"(?!\w)", english, value)
+    return value
 
 
 def parse_filters(value: dict[str, Any]) -> dict[str, Any]:
@@ -37,9 +59,11 @@ def parse_filters(value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("max_minutes must be a nonnegative integer")
         result["max_minutes"] = int(minutes)
     exclusions = value.get("exclude_ingredients", [])
-    if not isinstance(exclusions, list) or len(exclusions) > 20 or any(not isinstance(item, str) or not item.strip() or len(item) > 100 for item in exclusions):
-        raise ValueError("exclude_ingredients must contain at most 20 nonempty strings (100 characters each)")
-    result["exclude_ingredients"] = list(dict.fromkeys(fold(item) for item in exclusions))
+    if not isinstance(exclusions, list) or len(exclusions) > 40 or any(not isinstance(item, str) or not item.strip() or len(item) > 100 for item in exclusions):
+        raise ValueError("exclude_ingredients must contain at most 40 nonempty strings (100 characters each)")
+    folded = [fold(item) for item in exclusions]
+    # Also exclude the English name ("sữa" -> "milk"): most source ingredient lists are English.
+    result["exclude_ingredients"] = list(dict.fromkeys([*folded, *(vietnamese_to_english(item)[:100] for item in folded)]))
     declared = value.get("require_allergens", False)
     if not isinstance(declared, bool):
         raise ValueError("require_allergens must be a boolean")
@@ -88,6 +112,10 @@ class KnowledgeBase:
                     session_id TEXT PRIMARY KEY, updated_at REAL NOT NULL, context TEXT NOT NULL
                 );
             """)
+            if db.execute("PRAGMA user_version").fetchone()[0] < INDEX_VERSION:
+                # Older rows were folded differently; an empty payload makes the next import rewrite them.
+                db.execute("UPDATE recipes SET payload=''")
+                db.execute(f"PRAGMA user_version={INDEX_VERSION}")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -124,6 +152,9 @@ class KnowledgeBase:
                     continue
                 report["updated" if previous else "inserted"] += 1
                 exclusion_text = fold(" ".join([*(f"{item['name']} {item['original_text']}" for item in record["ingredients"]), *record["allergens"]]))
+                # Vietnamese-language records also match English exclusions ("sữa" -> "milk").
+                exclusion_text += " " + vietnamese_to_english(exclusion_text)
+                ingredient_text = fold(" ".join(item["name"] for item in record["ingredients"]))
                 db.execute("""
                     INSERT INTO recipes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(record_id) DO UPDATE SET title=excluded.title,
@@ -137,7 +168,8 @@ class KnowledgeBase:
                 db.execute("DELETE FROM recipe_fts WHERE record_id=?", (record_id,))
                 db.executemany("INSERT INTO categories VALUES (?, ?)", [(record_id, name) for name in set(record["categories"])])
                 db.executemany("INSERT INTO ingredients VALUES (?, ?)", [(record_id, name) for name in {fold(item["name"]) for item in record["ingredients"]}])
-                db.execute("INSERT INTO recipe_fts VALUES (?, ?, ?, ?, ?, ?)", (record_id, record["title"], record["description"], record["country_or_region"], " ".join(record["categories"]), " ".join(item["name"] for item in record["ingredients"])))
+                # Index folded text so "đ" matches "d" the same way queries are folded.
+                db.execute("INSERT INTO recipe_fts VALUES (?, ?, ?, ?, ?, ?)", (record_id, fold(record["title"]), fold(record["description"]), fold(record["country_or_region"]), fold(" ".join(record["categories"])), ingredient_text + " " + vietnamese_to_english(ingredient_text)))
         return report
 
     def import_processed(self, processed_dir: Path) -> dict[str, int]:
@@ -207,6 +239,10 @@ class KnowledgeBase:
             total = db.execute(f"SELECT count(*) FROM recipes r WHERE {where}", values).fetchone()[0]
             page = min(page, max(1, (total + page_size - 1) // page_size))
             rows = db.execute(f"SELECT payload FROM recipes r WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?", [*values, page_size, (page - 1) * page_size]).fetchall()
+        mapped = vietnamese_to_english(fold(filters["q"]))[:200]
+        if not total and mapped != fold(filters["q"]):
+            # Most source records are English: retry "cà chua" as "tomato".
+            return self.search({**filters, "q": mapped}, page, page_size)
         return {"items": [json.loads(row["payload"]) for row in rows], "total": total, "page": page, "page_size": page_size}
 
     def eligible(self, record_ids: list[str], filters: dict[str, Any]) -> list[dict[str, Any]]:

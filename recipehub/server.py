@@ -83,6 +83,10 @@ class RecipeHandler(BaseHTTPRequestHandler):
             self._error(503, "The knowledge base is temporarily unavailable")
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception:
+            # Without this the connection just drops and the website shows a vague network error.
+            LOGGER.exception("Unexpected error in GET %s", urlsplit(self.path).path)
+            self._error(500, "Internal server error")
 
     def _get(self) -> None:
         parts = urlsplit(self.path)
@@ -197,6 +201,9 @@ class RecipeHandler(BaseHTTPRequestHandler):
             pass
         except TimeoutError:
             self._error(408, "Request body timed out")
+        except Exception:
+            LOGGER.exception("Unexpected error in chat")
+            self._error(500, "Internal server error")
 
     def log_message(self, format: str, *args: Any) -> None:
         # Avoid putting dietary terms, search queries, or session tokens in logs.

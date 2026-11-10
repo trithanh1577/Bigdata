@@ -28,15 +28,11 @@ REGION_ALIASES = (
 )
 STOP_WORDS = set("a an the i me my we us you your please can could would should do does did to of for from in on at by some any with and or that this these those it its them their find search show suggest recommend recipe recipes dish dishes meal meals cook cooking make something want like need what which how are is have has goes into about tell try list ingredients ingredient steps step instructions instruction method preparation source sources provenance attribution time minutes minute min under within less than up total takes take difficulty easy hard nutrition calories calorie allergens allergen substitutions substitution substitute replace alternatives alternative instead tools equipment tips tip explain".split())
 STOP_WORDS.update("toi minh ban muon lam mon an tim co hay giup nha nau trong la gi cua nao the".split())
-# Common Vietnamese ingredient words (accent-folded) -> English terms used by the source records,
-# so Vietnamese searches work even without Gemini. Longer phrases are replaced first.
-VI_INGREDIENTS = {
-    "ca chua": "tomato", "thit bo": "beef", "thit ga": "chicken", "thit heo": "pork", "thit lon": "pork",
-    "hai san": "seafood", "trung ga": "egg", "tom": "shrimp", "gao": "rice", "com": "rice", "hanh": "onion",
-    "gung": "ginger", "khoai tay": "potato", "ca rot": "carrot", "dau phu": "tofu", "sua": "milk",
-    "pho mai": "cheese", "chanh": "lime", "ot": "chili", "ga": "chicken",
-}
-VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich pho bun bo com canh gi nao bi ung cho thay".split())
+# Words that only occur in Vietnamese. Dish names English speakers also type ("pho", "bun") are left out.
+VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich canh gi nao bi ung thay".split())
+# Words that show the user wants recipes even when no dish or ingredient is named ("find recipes").
+PLAIN_TEXT = "Write plain text for a chat bubble: no Markdown, no asterisks, no headings; use simple line breaks and '•' for lists."
+RECIPE_REQUEST = re.compile(r"\b(recipes?|dish(es)?|meals?|suggest|recommend|find|search|show|tim|goi y|mon an|mon)\b")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -55,6 +51,13 @@ def response_language(message: str, preferred: str) -> str:
     if set(query_tokens(message)) & VIETNAMESE_SIGNALS:
         return "vi"
     return preferred if preferred in {"en", "vi"} else "en"
+
+
+def plain_text(text: str) -> str:
+    """The chat bubble shows raw text, so drop Markdown the model may still emit."""
+    text = re.sub(r"\*\*|__", "", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
+    return re.sub(r"^\s*[*-]\s+", "• ", text, flags=re.M)
 
 
 def citation(recipe: dict[str, Any]) -> dict[str, str]:
@@ -146,17 +149,13 @@ class ConversationService:
         terms = [word for word in query_tokens(remainder) if word not in STOP_WORDS]
         if not terms and search_query:
             terms = [word for word in query_tokens(search_query) if word not in STOP_WORDS]
-        filters["q"] = " ".join(terms)
-        found = self.store.search(filters, page_size=3)["items"]
-        if not found and terms and response_language(question, "en") == "vi":
-            # Fallback for Vietnamese ingredient words against English source records.
-            mapped = remainder
-            for vietnamese, english in sorted(VI_INGREDIENTS.items(), key=lambda item: -len(item[0])):
-                mapped = re.sub(r"(?<!\w)" + vietnamese + r"(?!\w)", english, mapped)
-            filters["q"] = " ".join(word for word in query_tokens(mapped) if word not in STOP_WORDS)
-            if filters["q"] != " ".join(terms):
-                found = self.store.search(filters, page_size=3)["items"]
-        return found
+        narrowed = any(filters[key] for key in ("country", "category", "difficulty", "ingredient", "exclude_ingredients", "require_allergens")) or filters["max_minutes"] is not None
+        if not terms and not narrowed and not RECIPE_REQUEST.search(question):
+            # Small talk such as "How are you?" is not a request to list the first recipes.
+            return []
+        # Keep within the search API's 200-character limit for long chat messages.
+        filters["q"] = " ".join(terms)[:200]
+        return self.store.search(filters, page_size=3)["items"]
 
     def _search_intent(self, message: str, history: list[dict[str, str]]) -> tuple[bool, str]:
         """Ask Gemini whether the turn needs a recipe lookup and for which dish (in English)."""
@@ -230,19 +229,21 @@ class ConversationService:
             "recipe content when needed. For recipe facts use only the supplied recipe records. Do not invent "
             "ingredients, cooking steps, times, nutrition, or substitutions. State when a source does not provide a fact. "
             "For allergies, explain that ingredient lists may be incomplete and cross-contact cannot be assessed; never "
-            "guarantee that food is safe. The application will show source citations separately."
+            "guarantee that food is safe. The application will show source citations separately. " + PLAIN_TEXT
         )
         try:
-            return self.gemini.generate(
+            return plain_text(self.gemini.generate(
                 system,
                 json.dumps({"question": message, "preferences": preferences, "recipes": records}, ensure_ascii=False),
                 max_tokens=900,
                 history=history,
-            )
+            ))
         except GeminiUnavailable:
             return None
 
-    def _free_answer(self, message: str, language: str, history: list[dict[str, str]], recipe_missing: bool) -> str | None:
+    def _free_answer(
+        self, message: str, language: str, history: list[dict[str, str]], recipe_missing: bool, exclusions: list[str] | None = None,
+    ) -> str | None:
         """Ordinary assistant chat for turns that have no matching source record."""
         if not self.gemini.available:
             return None
@@ -250,8 +251,11 @@ class ConversationService:
         system = (
             f"You are a friendly kitchen assistant on a recipe website. Reply in {target} and chat naturally like a "
             "normal AI assistant: greetings, follow-up questions, cooking techniques, and food culture are welcome. "
-            "Keep answers concise. Never guarantee that a food is safe for an allergy or diet."
+            "Keep answers concise. Never guarantee that a food is safe for an allergy or diet. " + PLAIN_TEXT
         )
+        if exclusions:
+            # Without this, a general-knowledge recipe could include the user's allergen.
+            system += " The user avoids or is allergic to: " + ", ".join(exclusions) + ". Do not suggest these ingredients."
         if recipe_missing:
             system += (
                 " The site's collection and its web search found no source recipe for this request. You may give a "
@@ -259,7 +263,7 @@ class ConversationService:
                 "quantities should be checked."
             )
         try:
-            return self.gemini.generate(system, message, max_tokens=900, history=history)
+            return plain_text(self.gemini.generate(system, message, max_tokens=900, history=history))
         except GeminiUnavailable:
             return None
 
@@ -334,10 +338,13 @@ class ConversationService:
             question,
         )
         if negative:
-            extra = [item.strip() for item in re.split(r",|\band\b|\bor\b|\bva\b|\bhoac\b", negative[1]) if item.strip()]
+            # 100 characters per term is the search API's limit.
+            extra = [item.strip()[:100] for item in re.split(r",|\band\b|\bor\b|\bva\b|\bhoac\b", negative[1]) if item.strip()]
             context["exclusions"] = list(dict.fromkeys([*context.get("exclusions", []), *extra]))[:20]
             question = question[:negative.start()] + " " + question[negative.end():]
-        preferences["exclude_ingredients"] = list(dict.fromkeys([*preferences["exclude_ingredients"], *context.get("exclusions", [])]))[:20]
+        merged = list(dict.fromkeys([*preferences["exclude_ingredients"], *context.get("exclusions", [])]))[:40]
+        # Re-parse so chat exclusions also get their English names ("sua" -> "milk").
+        preferences["exclude_ingredients"] = parse_filters({"exclude_ingredients": merged})["exclude_ingredients"][:40]
         intent = self._intent(question)
         follow_up = (
             bool(re.search(r"\b(it|its|this|that|them|their|those|these)\b", question))
@@ -345,6 +352,9 @@ class ConversationService:
             or (language == "vi" and bool(re.search(r"\b(no|nay|do|ay|chung)\b", question)))
             or (intent != "discover" and not [word for word in query_tokens(question) if word not in STOP_WORDS])
         )
+        if follow_up and self.store.named_in(question, preferences):
+            # "How do I cook Ginger Rice? Is it easy?" names a dish, so "it" is that dish, not the previous one.
+            follow_up = False
         has_context = bool(context.get("record_ids"))
         history = context.get("history", [])
         records = self.store.eligible(context.get("record_ids", []), preferences) if follow_up else []
@@ -369,7 +379,7 @@ class ConversationService:
                     records = self._retrieve(fold(search_query) or question, preferences, fold(search_query))
         free_text = None
         if not records and not context_excluded and discovery_state != "gemini_error":
-            free_text = self._free_answer(message, language, history, wants_recipe)
+            free_text = self._free_answer(message, language, history, wants_recipe, preferences["exclude_ingredients"])
         if not records and free_text:
             text = free_text
         elif not records and context_excluded:
@@ -377,6 +387,13 @@ class ConversationService:
                 "Món trước đó không còn phù hợp với các nguyên liệu cần tránh hiện tại, nên mình không trả lời về nó. Hãy hỏi một món khác nhé."
                 if language == "vi" else
                 "The previous recipe no longer matches your current exclusions, so I will not answer about it. Ask about another dish."
+            )
+        elif not records and not follow_up and not RECIPE_REQUEST.search(question) and not [word for word in query_tokens(question) if word not in STOP_WORDS]:
+            # Small talk ("How are you?") without Gemini: no dish was asked for, so do not say "not in the collection".
+            text = (
+                "Mình là trợ lý nấu ăn. Hãy hỏi về một món ăn, nguyên liệu hoặc vùng miền nhé, ví dụ: “Tìm món có cà chua”."
+                if language == "vi" else
+                "I'm a kitchen assistant. Ask about a dish, an ingredient, or a region, for example “Find recipes with tomato”."
             )
         elif not records and follow_up and not has_context:
             text = (

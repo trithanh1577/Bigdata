@@ -1,7 +1,8 @@
 export const PAGE_SIZE = 6;
 
 export function normalized(value) {
-  return String(value ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
+  // NFD does not split "đ", so map it explicitly ("đậu" -> "dau").
+  return String(value ?? "").toLowerCase().replace(/đ/g, "d").normalize("NFD").replace(/\p{M}/gu, "").trim();
 }
 
 export function parseExclusions(value) {

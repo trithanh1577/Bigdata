@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -94,7 +95,11 @@ def main() -> None:
         store = KnowledgeBase(settings.database_path)
         processed_files = list((settings.processed_dir / "recipes").glob("*/*.json"))
         if processed_files:
-            store.import_processed(settings.processed_dir)
+            try:
+                store.import_processed(settings.processed_dir)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                # Keep serving the recipes already in the database rather than not starting at all.
+                print(f"Warning: could not refresh the knowledge base ({exc}); serving existing records.", file=sys.stderr)
         serve(store, settings.project_root / "frontend", args.host, args.port, args.allow_origin, settings)
     elif args.command == "pipeline":
         crawl_result = RecipeCrawler(settings).crawl(args.max_items)
@@ -110,10 +115,13 @@ def main() -> None:
         try:
             while True:
                 started = time.monotonic()
-                crawl_result = RecipeCrawler(settings).crawl(args.max_items)
-                normalize_result = NormalizationPipeline(settings).run()
-                index_result = KnowledgeBase(settings.database_path).import_processed(settings.processed_dir)
-                print(json.dumps({"crawl": crawl_result, "normalize": normalize_result, "index": index_result}, ensure_ascii=False))
+                try:
+                    crawl_result = RecipeCrawler(settings).crawl(args.max_items)
+                    normalize_result = NormalizationPipeline(settings).run()
+                    index_result = KnowledgeBase(settings.database_path).import_processed(settings.processed_dir)
+                    print(json.dumps({"crawl": crawl_result, "normalize": normalize_result, "index": index_result}, ensure_ascii=False))
+                except Exception as exc:  # one failed run (network, file locked by the server) must not stop the scheduler
+                    print(f"Scheduled run failed: {type(exc).__name__}: {exc}. Retrying next interval.", file=sys.stderr, flush=True)
                 time.sleep(max(0, interval_seconds - (time.monotonic() - started)))
         except KeyboardInterrupt:
             print("Scheduler stopped.")
