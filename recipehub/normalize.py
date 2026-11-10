@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 from recipehub.config import Settings
 from recipehub.ingestion_lock import ingestion_lock
-from recipehub.models import Ingredient, RecipeRecord
+from recipehub.models import Ingredient, RecipeRecord, validate_recipe
 from recipehub.text import clean_text, normalize_text, sha256_text, stable_id
 
 
@@ -517,6 +517,8 @@ class NormalizationPipeline:
         for _, path, envelope in sorted(latest.values(), key=lambda item: (str(item[2]["source_id"]), str(item[2]["source_record_id"]))):
             try:
                 record = normalize_raw_envelope(envelope)
+                # Same check as the database import: one bad file must not block indexing or server start.
+                validate_recipe(record.to_dict())
             except (KeyError, TypeError, ValueError) as exc:
                 report["invalid"].append({"file": str(path.relative_to(self.settings.project_root)), "reason": str(exc)})
                 continue

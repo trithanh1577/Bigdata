@@ -30,7 +30,10 @@ REGION_ALIASES = (
 )
 STOP_WORDS = set("a an the i me my we us you your please can could would should do does did to of for from in on at by some any with and or that this these those it its them their find search show suggest recommend recipe recipes dish dishes meal meals cook cooking make something want like need what which how are is have has goes into about tell try list ingredients ingredient steps step instructions instruction method preparation source sources provenance attribution time minutes minute min under within less than up total takes take difficulty easy hard nutrition calories calorie allergens allergen substitutions substitution substitute replace alternatives alternative instead tools equipment tips tip explain".split())
 STOP_WORDS.update("toi minh ban muon lam mon an tim co hay giup nha nau trong la gi cua nao the".split())
-VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich pho bun bo com canh gi nao bi ung cho thay".split())
+# Words that only occur in Vietnamese; dish names English speakers also type ("pho", "bun", "bo") are left out.
+VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich canh gi nao bi ung thay".split())
+TIME_LIMIT = re.compile(r"(?:under|within|in|less than|up to|duoi|trong vong|trong|khong qua|toi da)\s+(\d{1,5})\s*(?:min(?:ute)?s?|phut)\b")
+PLAIN_TEXT = "Write plain text for a chat bubble: no Markdown, no asterisks, no headings; use simple line breaks and '•' for lists."
 LOGGER = logging.getLogger(__name__)
 
 
@@ -49,6 +52,13 @@ def response_language(message: str, preferred: str) -> str:
     if set(query_tokens(message)) & VIETNAMESE_SIGNALS:
         return "vi"
     return preferred if preferred in {"en", "vi"} else "en"
+
+
+def plain_text(text: str) -> str:
+    """The chat bubble shows raw text, so drop Markdown the model may still emit."""
+    text = re.sub(r"\*\*|__", "", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
+    return re.sub(r"^\s*[*-]\s+", "• ", text, flags=re.M)
 
 
 def citation(recipe: dict[str, Any]) -> dict[str, str]:
@@ -100,7 +110,7 @@ class ConversationService:
             return "source"
         if re.search(r"how long|\b(timing|time|duration)\b|bao lau|thoi gian", question):
             return "time"
-        if re.search(r"\b(difficulty|difficult|easy|hard)\b|do kho", question):
+        if re.search(r"\b(difficulty|difficult|easy|hard)\b|do kho|đo kho", question):
             return "difficulty"
         if re.search(r"\b(tool|tools|equipment)\b", question):
             return "tools"
@@ -128,7 +138,7 @@ class ConversationService:
                 region_matched = True
                 remainder = re.sub(r"(?<!\w)" + re.escape(match) + r"(?!\w)", " ", remainder)
                 break
-        max_time = re.search(r"(?:under|within|in|less than|up to|duoi|trong vong|trong|khong qua|toi da)\s+(\d{1,5})\s*(?:min(?:ute)?s?|phut)\b", remainder)
+        max_time = TIME_LIMIT.search(remainder)
         if max_time:
             minutes = int(max_time[1])
             filters["max_minutes"] = min(minutes, preferences["max_minutes"]) if preferences["max_minutes"] is not None else minutes
@@ -151,7 +161,8 @@ class ConversationService:
         ))
         if not terms and not (recipe_request or max_time or region_matched):
             return []
-        filters["q"] = " ".join(terms)
+        # Keep within the search API's 200-character limit for long chat messages.
+        filters["q"] = " ".join(terms)[:200]
         return self.store.search(filters, page_size=3)["items"]
 
     def _search_intent(self, message: str, history: list[dict[str, str]]) -> tuple[bool, str]:
@@ -229,19 +240,21 @@ class ConversationService:
             "recipe content when needed. For recipe facts use only the supplied recipe records. Do not invent "
             "ingredients, cooking steps, times, nutrition, or substitutions. State when a source does not provide a fact. "
             "For allergies, explain that ingredient lists may be incomplete and cross-contact cannot be assessed; never "
-            "guarantee that food is safe. The application will show source citations separately."
+            "guarantee that food is safe. The application will show source citations separately. " + PLAIN_TEXT
         )
         try:
-            return self.gemini.generate(
+            return plain_text(self.gemini.generate(
                 system,
                 json.dumps({"question": message, "preferences": preferences, "recipes": records}, ensure_ascii=False),
                 max_tokens=900,
                 history=history,
-            )
+            ))
         except GeminiUnavailable:
             return None
 
-    def _free_answer(self, message: str, language: str, history: list[dict[str, str]], recipe_missing: bool) -> str | None:
+    def _free_answer(
+        self, message: str, language: str, history: list[dict[str, str]], recipe_missing: bool, exclusions: list[str] | None = None,
+    ) -> str | None:
         """Ordinary assistant chat for turns that have no matching source record."""
         if not self.gemini.available:
             return None
@@ -249,8 +262,11 @@ class ConversationService:
         system = (
             f"You are a friendly kitchen assistant on a recipe website. Reply in {target} and chat naturally like a "
             "normal AI assistant: greetings, follow-up questions, cooking techniques, and food culture are welcome. "
-            "Keep answers concise. Never guarantee that a food is safe for an allergy or diet."
+            "Keep answers concise. Never guarantee that a food is safe for an allergy or diet. " + PLAIN_TEXT
         )
+        if exclusions:
+            # Without this, a general-knowledge recipe could include the user's allergen.
+            system += " The user avoids or is allergic to: " + ", ".join(exclusions) + ". Do not suggest these ingredients."
         if recipe_missing:
             system += (
                 " The site's collection and its web search found no source recipe for this request. You may give a "
@@ -258,7 +274,7 @@ class ConversationService:
                 "quantities should be checked."
             )
         try:
-            return self.gemini.generate(system, message, max_tokens=900, history=history)
+            return plain_text(self.gemini.generate(system, message, max_tokens=900, history=history))
         except GeminiUnavailable:
             return None
 
@@ -333,7 +349,8 @@ class ConversationService:
             question,
         )
         if negative:
-            extra = [item.strip() for item in re.split(r",|\band\b|\bor\b|\bva\b|\bhoac\b", negative[1]) if item.strip()]
+            # 100 characters per term is the search API's limit.
+            extra = [item.strip()[:100] for item in re.split(r",|\band\b|\bor\b|\bva\b|\bhoac\b", negative[1]) if item.strip()]
             context["exclusions"] = list(dict.fromkeys([*context.get("exclusions", []), *extra]))[:20]
             question = question[:negative.start()] + " " + question[negative.end():]
         preferences["exclude_ingredients"] = list(dict.fromkeys([*preferences["exclude_ingredients"], *context.get("exclusions", [])]))[:20]
@@ -373,7 +390,7 @@ class ConversationService:
                     records = self._retrieve(fold(search_query) or question, preferences, fold(search_query))
         free_text = None
         if not records and not context_excluded and discovery_state != "gemini_error":
-            free_text = self._free_answer(message, language, history, wants_recipe)
+            free_text = self._free_answer(message, language, history, wants_recipe, preferences["exclude_ingredients"])
         if not records and free_text:
             text = free_text
         elif not records and context_excluded:
@@ -400,9 +417,9 @@ class ConversationService:
         elif not records:
             if discovery_state == "gemini_error" and discovery_status == 429:
                 text = (
-                    "Mình chưa tìm được công thức vì Gemini trả lỗi 429 (đang bị giới hạn hoặc hết hạn mức). Hãy kiểm tra hạn mức API rồi thử lại."
+                    "Mình chưa tìm thêm trên web được vì Gemini đang hết lượt dùng (lỗi 429). Hãy thử lại sau ít phút."
                     if language == "vi" else
-                    "Gemini returned HTTP 429, so I could not complete the web search. Check the API quota or rate limit, then try again."
+                    "I could not search the web because Gemini is out of quota for now (HTTP 429). Try again in a few minutes."
                 )
             elif discovery_state == "gemini_error":
                 if discovery_status:
@@ -447,6 +464,15 @@ class ConversationService:
                     if language == "vi" else
                     "I could not find a matching recipe in the collection or on the web. Try another dish name or relax the filters."
                 )
+            time_limit = TIME_LIMIT.search(question)
+            if time_limit and discovery_state in {"gemini_error", "not_configured", "not_attempted"}:
+                # Most sources (TheMealDB) publish no cooking time, so time-only questions rarely match.
+                local = (
+                    f"Chưa có món nào trong bộ sưu tập ghi tổng thời gian nấu tối đa {time_limit[1]} phút. Nhiều nguồn (như TheMealDB) không ghi thời gian nấu, nên bộ lọc thời gian thường không có kết quả."
+                    if language == "vi" else
+                    f"No recipe in the collection lists a total time of {time_limit[1]} minutes or less. Many sources (such as TheMealDB) publish no cooking time."
+                )
+                text = local if discovery_state != "gemini_error" else local + "\n\n" + text
         else:
             if intent != "discover":
                 records = records[:1]

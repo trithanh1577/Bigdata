@@ -147,7 +147,7 @@ def main() -> None:
                 try:
                     result = _run_pipeline(settings, args.max_items)
                     print(json.dumps(result, ensure_ascii=False), flush=True)
-                except (OSError, ValueError, sqlite3.Error) as exc:
+                except Exception as exc:  # any failed run (network, parsing, locked file) is retried next interval
                     # A temporary disk/database problem must not silently stop
                     # automatic collection for the remainder of the demo.
                     print(json.dumps({"error": f"{type(exc).__name__}: {exc}", "retry_in_seconds": interval_seconds}, ensure_ascii=False), flush=True)

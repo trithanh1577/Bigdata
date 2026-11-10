@@ -158,6 +158,7 @@ async function loadRecipes() {
 }
 
 async function loadFacets() {
+  $("facet-error")?.remove(); // language switches reload facets; keep at most one warning
   try {
     const facets = await client.facets();
     for (const [id, key, fallbackKey] of [["country", "countries", "countryAny"], ["category", "categories", "categoryAll"], ["difficulty", "difficulties", "difficultyAny"]]) {
