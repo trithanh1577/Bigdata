@@ -422,7 +422,14 @@ class ConversationService:
                     "I could not search the web because Gemini is out of quota for now (HTTP 429). Try again in a few minutes."
                 )
             elif discovery_state == "gemini_error":
-                if discovery_status:
+                if discovery_status and discovery_status >= 500:
+                    # 5xx is Google's side (overloaded); the key and settings are fine.
+                    text = (
+                        f"Mình chưa tìm thêm trên web được vì máy chủ Gemini đang quá tải tạm thời (lỗi {discovery_status}). Hãy thử lại sau ít phút."
+                        if language == "vi" else
+                        f"I could not search the web because Gemini's servers are temporarily overloaded (HTTP {discovery_status}). Try again in a few minutes."
+                    )
+                elif discovery_status:
                     text = (
                         f"Gemini chưa thể tìm công thức (HTTP {discovery_status}). Hãy kiểm tra khóa API, quyền truy cập và kết nối rồi thử lại."
                         if language == "vi" else
