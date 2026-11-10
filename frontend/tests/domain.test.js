@@ -87,3 +87,12 @@ test("demo abstains on dietary, safety, substitution, nutrition, and unrelated q
   assert.equal(exclusion.citations.length, 0);
   assert.match(exclusion.answer, /Ingredients to avoid/);
 });
+
+test("common source values have Vietnamese labels without a language model", async () => {
+  const { valueLabel } = await import("../i18n.js");
+  assert.equal(valueLabel("Italian", "vi"), "Ý");
+  assert.equal(valueLabel("Easy", "vi"), "Dễ");
+  assert.equal(valueLabel("Main course", "vi"), "Món chính");
+  assert.equal(valueLabel("Unlisted region", "vi"), "Unlisted region");
+  assert.equal(valueLabel("Italian", "en"), "Italian");
+});

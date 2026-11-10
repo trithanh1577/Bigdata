@@ -11,6 +11,7 @@ from recipehub.normalize import NormalizationPipeline
 from recipehub.recipe_crawler import RecipeCrawler
 from recipehub.knowledge_base import KnowledgeBase
 from recipehub.conversation import ConversationService
+from tests.helpers import offline_settings
 
 
 class PipelineTests(unittest.TestCase):
@@ -121,7 +122,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(normalize_report["invalid"], [])
             store = KnowledgeBase(root / "knowledge_base.sqlite3")
             self.assertEqual(store.import_processed(settings.processed_dir)["inserted"], 2)
-            answer = ConversationService(store).answer("Find recipes with tomato")
+            answer = ConversationService(store, offline_settings(root)).answer("Find recipes with tomato")
             self.assertEqual(len(answer["citations"]), 1)
             self.assertEqual(answer["citations"][0]["source_name"], "TheMealDB")
             self.assertEqual(answer["citations"][0]["source_url"], "https://www.themealdb.com/meal/100")

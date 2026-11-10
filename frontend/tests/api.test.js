@@ -77,3 +77,8 @@ test("invalid client configuration fails explicitly", () => {
   assert.throws(() => createClient({ mode: "unknown" }), /mode must be/);
   for (const apiBaseUrl of ["javascript:alert(1)", "", "https://user:pass@example.org", "https://example.org?x=1"]) assert.throws(() => createClient({ mode: "api", apiBaseUrl }), /apiBaseUrl/);
 });
+
+test("HTTP errors expose their status so the chat can recover an expired session", async () => {
+  const client = createClient(config, async () => ({ ok: false, status: 404, json: async () => ({}) }));
+  await assert.rejects(() => client.chat({ message: "hi", session_id: "x".repeat(43) }), error => error.status === 404);
+});

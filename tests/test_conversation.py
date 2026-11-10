@@ -6,7 +6,7 @@ from pathlib import Path
 
 from recipehub.conversation import ConversationService, SessionNotFound, SESSION_TTL_SECONDS
 from recipehub.knowledge_base import KnowledgeBase
-from tests.helpers import sample_recipe
+from tests.helpers import offline_settings, sample_recipe
 
 
 class ConversationTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class ConversationTests(unittest.TestCase):
         second = sample_recipe("test-rice", "Ginger Rice", "Japanese", 15)
         second.update(ingredients=[{"name": "rice", "original_text": "1 cup rice"}], allergens=[], categories=["Rice"])
         self.store.import_records([self.first, second])
-        self.service = ConversationService(self.store)
+        self.service = ConversationService(self.store, offline_settings(self.temp.name))
 
     def tearDown(self):
         self.temp.cleanup()
@@ -68,6 +68,20 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(self.service.answer("Tell me about astronomy")["citations"], [])
         self.assertEqual(self.service.answer("What are its ingredients?")["citations"], [])
 
+    def test_vietnamese_answers_without_gemini_stay_vietnamese(self):
+        first = self.service.answer("Tìm món Italian")
+        self.assertEqual(first["language"], "vi")
+        self.assertIn("Đây là các công thức", first["answer"])
+        detail = self.service.answer("Nguyên liệu của nó là gì?", session_id=first["session_id"])
+        self.assertIn("180 g pasta", detail["answer"])
+        self.assertIn("Mở bản ghi", detail["answer"])
+        self.assertIn("món nào", self.service.answer("Nguyên liệu của nó là gì?")["answer"])
+
+    def test_vietnamese_suggestion_chips_work_without_gemini(self):
+        for question, expected in (("Tìm món có cà chua", "test-pasta"), ("Tìm món ăn Nhật Bản", "test-rice"), ("Tìm món dưới 20 phút", "test-rice"), ("Tìm món Ý", "test-pasta")):
+            with self.subTest(question=question):
+                # Both fixtures share a "Tomato ..." description, so check membership.
+                self.assertIn(expected, [item["record_id"] for item in self.service.answer(question)["citations"]])
     def test_session_expiration_and_validation(self):
         first = self.service.answer("Find recipes")
         with self.store.connect() as db:

@@ -17,15 +17,25 @@ from recipehub.recipe_crawler import RecipeCrawler
 
 SESSION_TTL_SECONDS = 3600
 MAX_SESSIONS = 1000
+HISTORY_TURNS = 12
 REGION_ALIASES = (
-    ("italy", "italian"), ("japan", "japanese"), ("vietnam", "vietnamese"),
-    ("thailand", "thai"), ("korea", "korean", "south korean", "south korea"),
-    ("india", "indian"), ("mexico", "mexican"), ("china", "chinese"),
-    ("france", "french"), ("greece", "greek"), ("canada", "canadian"),
-    ("britain", "british", "united kingdom"),
+    # Vietnamese names are accent-folded ("Nhật Bản" -> "nhat ban") to match fold(question).
+    ("italy", "italian", "mon y", "nuoc y"), ("japan", "japanese", "nhat ban"), ("vietnam", "vietnamese", "viet nam"),
+    ("thailand", "thai", "thai lan"), ("korea", "korean", "south korean", "south korea", "han quoc"),
+    ("india", "indian", "an do"), ("mexico", "mexican"), ("china", "chinese", "trung quoc", "trung hoa"),
+    ("france", "french", "phap"), ("greece", "greek", "hy lap"), ("canada", "canadian"),
+    ("britain", "british", "united kingdom", "nuoc anh"),
 )
 STOP_WORDS = set("a an the i me my we us you your please can could would should do does did to of for from in on at by some any with and or that this these those it its them their find search show suggest recommend recipe recipes dish dishes meal meals cook cooking make something want like need what which how are is have has goes into about tell try list ingredients ingredient steps step instructions instruction method preparation source sources provenance attribution time minutes minute min under within less than up total takes take difficulty easy hard nutrition calories calorie allergens allergen substitutions substitution substitute replace alternatives alternative instead tools equipment tips tip explain".split())
-STOP_WORDS.update("toi minh ban muon lam mon an tim co hay giup nha".split())
+STOP_WORDS.update("toi minh ban muon lam mon an tim co hay giup nha nau trong la gi cua nao the".split())
+# Common Vietnamese ingredient words (accent-folded) -> English terms used by the source records,
+# so Vietnamese searches work even without Gemini. Longer phrases are replaced first.
+VI_INGREDIENTS = {
+    "ca chua": "tomato", "thit bo": "beef", "thit ga": "chicken", "thit heo": "pork", "thit lon": "pork",
+    "hai san": "seafood", "trung ga": "egg", "tom": "shrimp", "gao": "rice", "com": "rice", "hanh": "onion",
+    "gung": "ginger", "khoai tay": "potato", "ca rot": "carrot", "dau phu": "tofu", "sua": "milk",
+    "pho mai": "cheese", "chanh": "lime", "ot": "chili", "ga": "chicken",
+}
 VIETNAMESE_SIGNALS = set("toi minh ban muon nau mon cach khong duoc giup voi nhung thich pho bun bo com canh gi nao bi ung cho thay".split())
 LOGGER = logging.getLogger(__name__)
 
@@ -122,7 +132,7 @@ class ConversationService:
                 filters["country"] = region
                 remainder = re.sub(r"(?<!\w)" + re.escape(match) + r"(?!\w)", " ", remainder)
                 break
-        max_time = re.search(r"(?:under|within|in|less than|up to)\s+(\d{1,5})\s*(?:min(?:ute)?s?)\b", remainder)
+        max_time = re.search(r"(?:under|within|in|less than|up to|duoi|trong vong|trong|khong qua|toi da)\s+(\d{1,5})\s*(?:min(?:ute)?s?|phut)\b", remainder)
         if max_time:
             minutes = int(max_time[1])
             filters["max_minutes"] = min(minutes, preferences["max_minutes"]) if preferences["max_minutes"] is not None else minutes
@@ -137,23 +147,39 @@ class ConversationService:
         if not terms and search_query:
             terms = [word for word in query_tokens(search_query) if word not in STOP_WORDS]
         filters["q"] = " ".join(terms)
-        return self.store.search(filters, page_size=3)["items"]
+        found = self.store.search(filters, page_size=3)["items"]
+        if not found and terms and response_language(question, "en") == "vi":
+            # Fallback for Vietnamese ingredient words against English source records.
+            mapped = remainder
+            for vietnamese, english in sorted(VI_INGREDIENTS.items(), key=lambda item: -len(item[0])):
+                mapped = re.sub(r"(?<!\w)" + vietnamese + r"(?!\w)", english, mapped)
+            filters["q"] = " ".join(word for word in query_tokens(mapped) if word not in STOP_WORDS)
+            if filters["q"] != " ".join(terms):
+                found = self.store.search(filters, page_size=3)["items"]
+        return found
 
-    def _english_search_query(self, message: str) -> str:
+    def _search_intent(self, message: str, history: list[dict[str, str]]) -> tuple[bool, str]:
+        """Ask Gemini whether the turn needs a recipe lookup and for which dish (in English)."""
         if not self.gemini.available:
-            return ""
+            return False, ""
         try:
             response = self.gemini.generate(
-                "Convert the user's recipe request into concise English search terms. Keep dish and ingredient names "
-                "accurate. Do not answer the question. Return only JSON with a string field named query.",
-                json.dumps({"request": message}, ensure_ascii=False),
+                "Decide whether the user's latest message asks about a specific dish or recipe (how to cook it, its "
+                "ingredients, steps, time, or finding dishes). Use the earlier conversation to resolve words like 'it' "
+                "or 'món đó'. Greetings, small talk, and general kitchen questions are not recipe requests. "
+                "Return only JSON: {\"recipe_request\": boolean, \"query\": concise English dish or ingredient search "
+                "terms, or an empty string}. Do not answer the question.",
+                json.dumps({"message": message}, ensure_ascii=False),
                 max_tokens=120,
                 json_response=True,
+                history=history,
             )
-            value = json.loads(response).get("query", "")
-            return value.strip() if isinstance(value, str) else ""
-        except (GeminiUnavailable, ValueError, TypeError, AttributeError):
-            return ""
+            value = json.loads(response)
+            query = value.get("query", "")
+            return value.get("recipe_request") is True, query.strip() if isinstance(query, str) else ""
+        except (ValueError, TypeError, AttributeError):
+            # GeminiUnavailable propagates so the caller can report quota/connection errors.
+            return False, ""
 
     def _discover_and_index(self, query: str, language: str, exclusions: list[str]) -> tuple[bool, str, int | None]:
         if not self.gemini.web_discovery_available:
@@ -186,7 +212,8 @@ class ConversationService:
                     self._discovered.discard(query_key)
 
     def _grounded_answer(
-        self, message: str, preferences: dict[str, Any], recipes: list[dict[str, Any]], language: str
+        self, message: str, preferences: dict[str, Any], recipes: list[dict[str, Any]], language: str,
+        history: list[dict[str, str]] | None = None,
     ) -> str | None:
         if not self.gemini.available:
             return None
@@ -199,45 +226,91 @@ class ConversationService:
                 "nutrition", "source_name", "source_url", "attribution",
             )})
         system = (
-            f"You are a culinary assistant. Answer in {target}. Use only the supplied recipe records and the user's "
-            "question. Do not invent ingredients, cooking steps, times, nutrition, or substitutions. State when a source "
-            "does not provide a fact. For allergies, explain that ingredient lists may be incomplete and cross-contact "
-            "cannot be assessed; never guarantee that food is safe. The application will show source citations separately."
+            f"You are a friendly kitchen assistant chatting naturally with the user. Answer in {target}, translating "
+            "recipe content when needed. For recipe facts use only the supplied recipe records. Do not invent "
+            "ingredients, cooking steps, times, nutrition, or substitutions. State when a source does not provide a fact. "
+            "For allergies, explain that ingredient lists may be incomplete and cross-contact cannot be assessed; never "
+            "guarantee that food is safe. The application will show source citations separately."
         )
         try:
             return self.gemini.generate(
                 system,
                 json.dumps({"question": message, "preferences": preferences, "recipes": records}, ensure_ascii=False),
                 max_tokens=900,
+                history=history,
             )
         except GeminiUnavailable:
             return None
 
+    def _free_answer(self, message: str, language: str, history: list[dict[str, str]], recipe_missing: bool) -> str | None:
+        """Ordinary assistant chat for turns that have no matching source record."""
+        if not self.gemini.available:
+            return None
+        target = "Vietnamese" if language == "vi" else "English"
+        system = (
+            f"You are a friendly kitchen assistant on a recipe website. Reply in {target} and chat naturally like a "
+            "normal AI assistant: greetings, follow-up questions, cooking techniques, and food culture are welcome. "
+            "Keep answers concise. Never guarantee that a food is safe for an allergy or diet."
+        )
+        if recipe_missing:
+            system += (
+                " The site's collection and its web search found no source recipe for this request. You may give a "
+                "general-knowledge recipe, but say clearly at the start that it is not from a cited source and that "
+                "quantities should be checked."
+            )
+        try:
+            return self.gemini.generate(system, message, max_tokens=900, history=history)
+        except GeminiUnavailable:
+            return None
+
     @staticmethod
-    def _record_answer(recipe: dict[str, Any], intent: str) -> str:
+    def _record_answer(recipe: dict[str, Any], intent: str, language: str = "en") -> str:
+        vi = language == "vi"
         heading = recipe["title"] + "\n\n"
         if intent == "ingredients":
             text = "\n".join(f"• {item['original_text']}" for item in recipe["ingredients"])
         elif intent == "instructions":
             text = "\n".join(f"{index}. {step}" for index, step in enumerate(recipe["instructions"], 1))
         elif intent == "source":
-            text = f"Provider: {recipe['source_name']}\n{recipe['attribution']}\nSource: {recipe['source_url']}\nLicense / terms: {recipe['source_license']}\nCollected: {recipe['collected_at']}"
+            text = (
+                f"Nhà cung cấp: {recipe['source_name']}\n{recipe['attribution']}\nNguồn: {recipe['source_url']}\nGiấy phép / điều khoản: {recipe['source_license']}\nThu thập lúc: {recipe['collected_at']}"
+                if vi else
+                f"Provider: {recipe['source_name']}\n{recipe['attribution']}\nSource: {recipe['source_url']}\nLicense / terms: {recipe['source_license']}\nCollected: {recipe['collected_at']}"
+            )
         elif intent == "time":
-            supplied = [f"{label}: {recipe[key]} minutes" for key, label in (("prep_minutes", "Preparation"), ("cook_minutes", "Cooking"), ("total_minutes", "Total")) if recipe[key] is not None]
-            text = "\n".join(supplied) if supplied else "The source does not supply structured preparation, cooking, or total time. I will not infer it from the instructions."
+            labels = (("prep_minutes", "Chuẩn bị"), ("cook_minutes", "Nấu"), ("total_minutes", "Tổng")) if vi else (("prep_minutes", "Preparation"), ("cook_minutes", "Cooking"), ("total_minutes", "Total"))
+            unit = "phút" if vi else "minutes"
+            supplied = [f"{label}: {recipe[key]} {unit}" for key, label in labels if recipe[key] is not None]
+            missing = "Nguồn không cung cấp thời gian chuẩn bị, nấu hoặc tổng thời gian. Mình sẽ không tự suy đoán." if vi else "The source does not supply structured preparation, cooking, or total time. I will not infer it from the instructions."
+            text = "\n".join(supplied) if supplied else missing
         elif intent == "difficulty":
-            text = f"Source-declared difficulty: {recipe['difficulty']}" if recipe["difficulty"] else "The source does not supply a difficulty rating."
+            if vi:
+                text = f"Độ khó do nguồn khai báo: {recipe['difficulty']}" if recipe["difficulty"] else "Nguồn không cung cấp độ khó."
+            else:
+                text = f"Source-declared difficulty: {recipe['difficulty']}" if recipe["difficulty"] else "The source does not supply a difficulty rating."
         elif intent == "allergens":
-            text = f"Source-declared allergens: {', '.join(recipe['allergens'])}. This list may be incomplete." if recipe["allergens"] else "The source does not supply structured allergen declarations. Allergen status is unknown."
-            text += "\nI cannot certify dietary suitability or medical safety. Text exclusions do not detect all aliases, hidden ingredients, or cross-contact."
+            if vi:
+                text = f"Chất gây dị ứng do nguồn khai báo: {', '.join(recipe['allergens'])}. Danh sách này có thể chưa đầy đủ." if recipe["allergens"] else "Nguồn không khai báo chất gây dị ứng. Tình trạng dị ứng chưa rõ."
+                text += "\nMình không thể xác nhận món ăn phù hợp chế độ ăn hay an toàn y tế. Bộ lọc chữ không phát hiện mọi tên gọi khác, nguyên liệu ẩn hoặc nhiễm chéo."
+            else:
+                text = f"Source-declared allergens: {', '.join(recipe['allergens'])}. This list may be incomplete." if recipe["allergens"] else "The source does not supply structured allergen declarations. Allergen status is unknown."
+                text += "\nI cannot certify dietary suitability or medical safety. Text exclusions do not detect all aliases, hidden ingredients, or cross-contact."
         elif intent == "nutrition":
-            text = "Source-declared nutrition:\n" + json.dumps(recipe["nutrition"], ensure_ascii=False, indent=2) if recipe["nutrition"] else "The source does not supply structured nutrition information. I will not estimate it."
+            if recipe["nutrition"]:
+                text = ("Dinh dưỡng do nguồn khai báo:\n" if vi else "Source-declared nutrition:\n") + json.dumps(recipe["nutrition"], ensure_ascii=False, indent=2)
+            else:
+                text = "Nguồn không cung cấp thông tin dinh dưỡng. Mình sẽ không tự ước tính." if vi else "The source does not supply structured nutrition information. I will not estimate it."
         elif intent == "substitutions":
-            text = "Source-declared substitutions:\n" + "\n".join("; ".join(f"{key}: {value}" for key, value in item.items()) for item in recipe["substitutions"]) if recipe["substitutions"] else "The source does not supply substitutions. I will not invent an alternative ingredient."
+            if recipe["substitutions"]:
+                text = ("Nguyên liệu thay thế do nguồn nêu:\n" if vi else "Source-declared substitutions:\n") + "\n".join("; ".join(f"{key}: {value}" for key, value in item.items()) for item in recipe["substitutions"])
+            else:
+                text = "Nguồn không nêu nguyên liệu thay thế. Mình sẽ không tự bịa ra." if vi else "The source does not supply substitutions. I will not invent an alternative ingredient."
         else:
             values = recipe[intent]
-            text = "\n".join(f"• {item}" for item in values) if values else f"The source does not supply {intent}."
-        return heading + text + "\n\nSee the cited record for the original source and its attribution."
+            missing = {"tools": "dụng cụ", "tips": "mẹo"}.get(intent, intent)
+            text = "\n".join(f"• {item}" for item in values) if values else (f"Nguồn không cung cấp {missing}." if vi else f"The source does not supply {intent}.")
+        footer = "Mở bản ghi được trích dẫn để xem nguồn gốc và thông tin ghi công." if vi else "See the cited record for the original source and its attribution."
+        return heading + text + "\n\n" + footer
 
     def answer(
         self,
@@ -266,25 +339,52 @@ class ConversationService:
             question = question[:negative.start()] + " " + question[negative.end():]
         preferences["exclude_ingredients"] = list(dict.fromkeys([*preferences["exclude_ingredients"], *context.get("exclusions", [])]))[:20]
         intent = self._intent(question)
-        follow_up = bool(re.search(r"\b(it|its|this|that|them|their|those|these)\b", question)) or (intent != "discover" and not [word for word in query_tokens(question) if word not in STOP_WORDS])
+        follow_up = (
+            bool(re.search(r"\b(it|its|this|that|them|their|those|these)\b", question))
+            # Vietnamese pronouns (nó, này, đó, ấy, chúng) after accent folding.
+            or (language == "vi" and bool(re.search(r"\b(no|nay|do|ay|chung)\b", question)))
+            or (intent != "discover" and not [word for word in query_tokens(question) if word not in STOP_WORDS])
+        )
         has_context = bool(context.get("record_ids"))
+        history = context.get("history", [])
         records = self.store.eligible(context.get("record_ids", []), preferences) if follow_up else []
+        # The previous recipe no longer fits newly applied exclusions: do not answer it from memory.
+        context_excluded = follow_up and has_context and not records
         search_query = ""
+        wants_recipe = False
         discovery_state = "not_configured" if not self.gemini.web_discovery_available else "not_attempted"
         discovery_status: int | None = None
-        if not (follow_up and has_context):
+        if not follow_up:
             records = self._retrieve(question, preferences)
-        if not records and language == "vi":
-            search_query = self._english_search_query(message)
-            if search_query:
-                records = self._retrieve(search_query, preferences, search_query)
-        if not records and self.gemini.web_discovery_available:
-            discovered, discovery_state, discovery_status = self._discover_and_index(message, language, preferences["exclude_ingredients"])
-            if discovered:
-                if not search_query and language == "vi":
-                    search_query = self._english_search_query(message)
-                records = self._retrieve(search_query or question, preferences, search_query)
-        if not records:
+        if not records and not context_excluded and self.gemini.available:
+            try:
+                wants_recipe, search_query = self._search_intent(message, history)
+            except GeminiUnavailable as exc:
+                discovery_state, discovery_status = "gemini_error", exc.status_code
+            if wants_recipe and search_query:
+                records = self._retrieve(fold(search_query), preferences, fold(search_query))
+            if not records and wants_recipe and self.gemini.web_discovery_available:
+                discovered, discovery_state, discovery_status = self._discover_and_index(search_query or message, language, preferences["exclude_ingredients"])
+                if discovered:
+                    records = self._retrieve(fold(search_query) or question, preferences, fold(search_query))
+        free_text = None
+        if not records and not context_excluded and discovery_state != "gemini_error":
+            free_text = self._free_answer(message, language, history, wants_recipe)
+        if not records and free_text:
+            text = free_text
+        elif not records and context_excluded:
+            text = (
+                "Món trước đó không còn phù hợp với các nguyên liệu cần tránh hiện tại, nên mình không trả lời về nó. Hãy hỏi một món khác nhé."
+                if language == "vi" else
+                "The previous recipe no longer matches your current exclusions, so I will not answer about it. Ask about another dish."
+            )
+        elif not records and follow_up and not has_context:
+            text = (
+                "Bạn đang hỏi về món nào? Hãy cho mình biết tên món trước nhé."
+                if language == "vi" else
+                "Which dish do you mean? Tell me the dish name first."
+            )
+        elif not records:
             if discovery_state == "gemini_error" and discovery_status == 429:
                 text = (
                     "Mình chưa tìm được công thức vì Gemini trả lỗi 429 (đang bị giới hạn hoặc hết hạn mức). Hãy kiểm tra hạn mức API rồi thử lại."
@@ -337,16 +437,22 @@ class ConversationService:
         else:
             if intent != "discover":
                 records = records[:1]
+            vi = language == "vi"
             lines = []
             for recipe in records:
-                timing = f"{recipe['total_minutes']} minutes" if recipe["total_minutes"] is not None else "time not supplied"
-                lines.append(f"• {recipe['title']} — {recipe['country_or_region'] or 'region not supplied'}; {timing}.")
-            fallback = (
-                self._record_answer(records[0], intent)
-                if intent != "discover"
-                else "Here are source records matching your question and preferences:\n\n" + "\n".join(lines) + "\n\nOpen a citation for the full recipe."
-            )
-            text = self._grounded_answer(message, preferences, records, language) or fallback
+                if recipe["total_minutes"] is not None:
+                    timing = f"{recipe['total_minutes']} {'phút' if vi else 'minutes'}"
+                else:
+                    timing = "chưa có thời gian" if vi else "time not supplied"
+                region = recipe["country_or_region"] or ("chưa rõ vùng miền" if vi else "region not supplied")
+                lines.append(f"• {recipe['title']} — {region}; {timing}.")
+            if intent != "discover":
+                fallback = self._record_answer(records[0], intent, language)
+            elif vi:
+                fallback = "Đây là các công thức phù hợp với câu hỏi và lựa chọn của bạn:\n\n" + "\n".join(lines) + "\n\nMở trích dẫn để xem công thức đầy đủ."
+            else:
+                fallback = "Here are source records matching your question and preferences:\n\n" + "\n".join(lines) + "\n\nOpen a citation for the full recipe."
+            text = self._grounded_answer(message, preferences, records, language, history) or fallback
         if preferences["exclude_ingredients"]:
             suffix = (
                 "\n\nĐã loại trừ theo nội dung nguyên liệu được ghi nhận: " + ", ".join(preferences["exclude_ingredients"]) + ". Điều này không bảo đảm món ăn an toàn cho dị ứng."
@@ -356,5 +462,7 @@ class ConversationService:
             text += suffix
         if records:
             context["record_ids"] = [record["record_id"] for record in records]
+        # Keep a short server-side transcript so Gemini can follow the conversation.
+        context["history"] = [*history, {"role": "user", "text": message}, {"role": "model", "text": text[:2000]}][-HISTORY_TURNS:]
         self._save(session_id, context)
         return {"answer": text, "session_id": session_id, "citations": [citation(record) for record in records], "language": language}

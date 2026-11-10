@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 from recipehub.knowledge_base import KnowledgeBase
 from recipehub.server import RecipeServer
-from tests.helpers import sample_recipe
+from tests.helpers import offline_settings, sample_recipe
 
 
 class ServerTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class ServerTests(unittest.TestCase):
         cls.store = KnowledgeBase(Path(cls.temp.name) / "recipes.sqlite3")
         cls.store.import_records([sample_recipe(), sample_recipe("second", "Rice bowl", "Japanese", None)])
         frontend = Path(__file__).resolve().parents[1] / "frontend"
-        cls.server = RecipeServer(("127.0.0.1", 0), cls.store, frontend)
+        cls.server = RecipeServer(("127.0.0.1", 0), cls.store, frontend, settings=offline_settings(cls.temp.name))
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.base = f"http://127.0.0.1:{cls.server.server_port}"

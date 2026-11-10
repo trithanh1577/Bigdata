@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from recipehub.normalize import normalize_raw_envelope
+from recipehub.normalize import normalize_raw_envelope, normalize_ingredient, parse_minutes
 
 
 def envelope(source_id: str, payload: dict[str, object]) -> dict[str, object]:
@@ -57,6 +57,46 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(record.servings, "2 servings")
         self.assertEqual(record.image_url, "https://recipes.example/pasta.jpg")
         self.assertEqual(record.source_name, "Example cooking website")
+    def test_vulgar_fraction_parsing_preserves_original_wording(self):
+        for text, quantity in (("½ cup flour", "1/2"), ("1½ cups flour", "1 1/2")):
+            result = normalize_ingredient(text)
+            self.assertEqual(result.original_text, text)
+            self.assertEqual(result.quantity, quantity)
+            self.assertEqual(result.unit, "cup")
+            self.assertEqual(result.name, "flour")
+
+    def test_wikibooks_tables_infobox_and_nested_procedure_headings(self):
+        html = (
+            '<div class="mw-parser-output"><table class="infobox">'
+            '<tr><th>Cuisine</th><td>Nigerian cuisine</td></tr>'
+            '<tr><th>Servings</th><td>4</td></tr><tr><th>Time</th><td>2 hours</td></tr>'
+            '<tr><th>Difficulty</th><td><img alt="Difficult" src="difficulty.svg"></td></tr></table>'
+            '<p>Recipes | Ingredients | Equipment | Techniques | More navigation</p>'
+            '<p>This is an actual source introduction for the test dish.</p>'
+            '<h2>Main Ingredients</h2><table><tr><th>Name</th><th>Volume</th><th>Weight</th></tr>'
+            '<tr><td>Flour</td><td>2 cups</td><td>250 g</td></tr></table>'
+            '<h2>Equipment</h2><ul><li>Mixing bowl</li></ul>'
+            '<h2>Procedure</h2><h3>Preparing the ingredients</h3><p>Measure the flour.</p>'
+            '<h3>Cooking</h3><p>Mix and cook.</p><h2>Tips</h2><p>Use the source tip.</p></div>'
+        )
+        record = normalize_raw_envelope(envelope("wikibooks", {"parse": {"title": "Cookbook:Test", "text": html}}))
+        self.assertEqual(len(record.ingredients), 1)
+        self.assertEqual(record.ingredients[0].name, "flour")
+        self.assertEqual(record.ingredients[0].quantity, "2")
+        self.assertIn("250 g", record.ingredients[0].original_text)
+        self.assertEqual(record.instructions, ["Measure the flour.", "Mix and cook."])
+        self.assertEqual(record.total_minutes, 120)
+        self.assertEqual(record.difficulty, "Difficult")
+        self.assertEqual(record.country_or_region, "Nigerian")
+        self.assertEqual(record.tools, ["Mixing bowl"])
+        self.assertEqual(record.tips, ["Use the source tip."])
+        self.assertEqual(record.allergens, [])
+        self.assertEqual(record.description, "This is an actual source introduction for the test dish.")
+
+    def test_ambiguous_time_is_left_unknown(self):
+        self.assertIsNone(parse_minutes("1–2 hours"))
+        self.assertIsNone(parse_minutes("overnight"))
+        self.assertEqual(parse_minutes("PT1H20M"), 80)
 
     def test_themealdb_quantity_and_provenance(self) -> None:
         record = normalize_raw_envelope(envelope("themealdb", {
